@@ -1,0 +1,14 @@
+[package]
+name = "gui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "Argon"
+path = "src/main.rs"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed" }
+smallvec = "1"
+rust-embed = "8"
+lazy_static = "1"
