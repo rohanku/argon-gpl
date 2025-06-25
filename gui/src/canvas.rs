@@ -1,9 +1,15 @@
 use gpui::{
-    div, pattern_slash, App, BorderStyle, Bounds, Context, Corners, DefiniteLength, Edges, Element,
-    Entity, InteractiveElement, IntoElement, Length, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render, Rgba, ScrollWheelEvent, Size,
-    Style, Styled, Window,
+    div, pattern_slash, rgb, solid_background, App, BorderStyle, Bounds, Context, Corners,
+    DefiniteLength, Edges, Element, Entity, InteractiveElement, IntoElement, Length, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
+    Rgba, ScrollWheelEvent, Size, Style, Styled, Window,
 };
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum ShapeFill {
+    Stippling,
+    Solid,
+}
 
 #[derive(Copy, Clone, PartialEq)]
 pub struct Rect {
@@ -11,6 +17,9 @@ pub struct Rect {
     pub x1: f32,
     pub y0: f32,
     pub y1: f32,
+    pub color: Rgba,
+    pub fill: ShapeFill,
+    pub border_color: Rgba,
 }
 
 // ~TextElement
@@ -103,18 +112,16 @@ impl Element for CanvasElement {
                                 + bounds.origin.clone(),
                             Size::new(scale * Pixels(r.x1 - r.x0), scale * Pixels(r.y1 - r.y0)),
                         );
-                        let color = Rgba {
-                            r: 1.,
-                            g: 0.,
-                            b: 0.,
-                            a: 1.,
+                        let background = match r.fill {
+                            ShapeFill::Solid => solid_background(r.color),
+                            ShapeFill::Stippling => pattern_slash(r.color.into(), 1., 9.),
                         };
                         window.paint_quad(PaintQuad {
                             bounds,
                             corner_radii: Corners::all(Pixels(0.)),
-                            background: pattern_slash(color.into(), 1., 4.),
+                            background,
                             border_widths: Edges::all(Pixels(2.)),
-                            border_color: color.into(),
+                            border_color: r.border_color.into(),
                             border_style: BorderStyle::Solid,
                         });
                     }
@@ -150,18 +157,27 @@ pub(crate) fn test_canvas() -> LayoutCanvas {
                 y0: 0.0,
                 x1: 100.,
                 y1: 40.,
+                color: rgb(0xff),
+                fill: ShapeFill::Stippling,
+                border_color: rgb(0xff),
+            },
+            Rect {
+                x0: 70.,
+                y0: 10.,
+                x1: 90.,
+                y1: 30.,
+                color: rgb(0x5e00e6),
+                fill: ShapeFill::Solid,
+                border_color: rgb(0x5e00e6),
             },
             Rect {
                 x0: 60.,
                 y0: 0.,
                 x1: 100.,
                 y1: 100.,
-            },
-            Rect {
-                x0: 70.,
-                y0: 60.,
-                x1: 90.,
-                y1: 80.,
+                color: rgb(0xff00ff),
+                fill: ShapeFill::Stippling,
+                border_color: rgb(0xff00ff),
             },
         ],
         offset: Point::new(Pixels(0.), Pixels(0.)),
