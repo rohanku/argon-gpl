@@ -113,7 +113,7 @@ impl Element for CanvasElement {
                             bounds,
                             corner_radii: Corners::all(Pixels(0.)),
                             background: pattern_slash(color.into(), 1., 4.),
-                            border_widths: Edges::all(Pixels(0.)),
+                            border_widths: Edges::all(Pixels(2.)),
                             border_color: color.into(),
                             border_style: BorderStyle::Solid,
                         });
