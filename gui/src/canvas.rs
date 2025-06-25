@@ -1,5 +1,5 @@
 use gpui::{
-    div, pattern_slash, rgb, solid_background, App, BorderStyle, Bounds, Context, Corners,
+    div, pattern_slash, rgb, solid_background, BorderStyle, Bounds, Context, Corners,
     DefiniteLength, Edges, Element, Entity, InteractiveElement, IntoElement, Length, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
     Rgba, ScrollWheelEvent, Size, Style, Styled, Window,
@@ -63,8 +63,8 @@ impl Element for CanvasElement {
 
     fn request_layout(
         &mut self,
-        id: Option<&gpui::GlobalElementId>,
-        inspector_id: Option<&gpui::InspectorElementId>,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
         window: &mut gpui::Window,
         cx: &mut gpui::App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
@@ -75,27 +75,27 @@ impl Element for CanvasElement {
 
     fn prepaint(
         &mut self,
-        id: Option<&gpui::GlobalElementId>,
-        inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: gpui::Bounds<gpui::Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        window: &mut gpui::Window,
-        cx: &mut gpui::App,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: gpui::Bounds<gpui::Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::App,
     ) -> Self::PrepaintState {
     }
 
     fn paint(
         &mut self,
-        id: Option<&gpui::GlobalElementId>,
-        inspector_id: Option<&gpui::InspectorElementId>,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
         bounds: gpui::Bounds<gpui::Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
         window: &mut gpui::Window,
         cx: &mut gpui::App,
     ) {
         self.inner
-            .update(cx, |inner, cx| inner.screen_origin = bounds.origin);
+            .update(cx, |inner, _cx| inner.screen_origin = bounds.origin);
         let inner = self.inner.read(cx);
         let rects = inner.rects.clone();
         let scale = inner.scale;
@@ -103,13 +103,13 @@ impl Element for CanvasElement {
         inner
             .bg_style
             .clone()
-            .paint(bounds, window, cx, |window, cx| {
+            .paint(bounds, window, cx, |window, _cx| {
                 window.paint_layer(bounds, |window| {
                     for r in rects {
                         let bounds = Bounds::new(
                             Point::new(scale * Pixels(r.x0), scale * Pixels(r.y0))
                                 + offset
-                                + bounds.origin.clone(),
+                                + bounds.origin,
                             Size::new(scale * Pixels(r.x1 - r.x0), scale * Pixels(r.y1 - r.y0)),
                         );
                         let background = match r.fill {
@@ -133,7 +133,7 @@ impl Element for CanvasElement {
 impl Render for LayoutCanvas {
     fn render(
         &mut self,
-        window: &mut gpui::Window,
+        _window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
         div()

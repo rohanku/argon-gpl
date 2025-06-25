@@ -1,4 +1,4 @@
-use gpui::{rgb, rgba, Rgba};
+use gpui::{rgb, Rgba};
 use lazy_static::lazy_static;
 
 pub struct Theme {

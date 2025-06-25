@@ -48,18 +48,12 @@ pub struct SideBar {
 }
 
 pub struct LayerControl {
-    clicked: bool,
     state: Entity<LayerState>,
 }
 
 impl SideBar {
     pub fn new(cx: &mut Context<Self>, state: Entity<ProjectState>) -> Self {
-        let layers = state
-            .read(cx)
-            .layers
-            .iter()
-            .map(|layer| layer.clone())
-            .collect_vec();
+        let layers = state.read(cx).layers.iter().cloned().collect_vec();
 
         let layers = layers
             .into_iter()
@@ -71,14 +65,10 @@ impl SideBar {
 }
 
 impl LayerControl {
-    pub fn new(cx: &mut Context<Self>, state: Entity<LayerState>) -> Self {
-        Self {
-            clicked: false,
-            state,
-        }
+    pub fn new(_cx: &mut Context<Self>, state: Entity<LayerState>) -> Self {
+        Self { state }
     }
-    fn on_click(&mut self, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        println!("test");
+    fn on_click(&mut self, _event: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| {
             state.visible = !state.visible;
             cx.notify();
@@ -87,10 +77,10 @@ impl LayerControl {
 }
 
 impl Render for LayerControl {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
         div()
-            .id("layer_control")
+            .id("layer_control") // TODO: does this need to be unique? seems to work as is
             .flex()
             .on_click(cx.listener(Self::on_click))
             .child(format!(
@@ -129,7 +119,7 @@ impl Render for SideBar {
                             div()
                                 .flex()
                                 .flex_col()
-                                .children(self.layers.iter().map(|layer| layer.clone())),
+                                .children(self.layers.iter().cloned()),
                         ),
                     ),
             )

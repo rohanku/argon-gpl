@@ -1,13 +1,9 @@
 use std::borrow::Cow;
 
-use canvas::LayoutCanvas;
 use gpui::*;
 use project::Project;
-use theme::THEME;
-use toolbars::{SideBar, ToolBar};
 
 use crate::assets::{ZED_PLEX_MONO, ZED_PLEX_SANS};
-use crate::toolbars::TitleBar;
 
 pub mod assets;
 pub mod canvas;
