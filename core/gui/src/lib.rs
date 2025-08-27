@@ -12,11 +12,10 @@ use socket::GuiToLsp;
 use crate::assets::{ZED_PLEX_MONO, ZED_PLEX_SANS};
 
 pub mod assets;
-pub mod canvas;
+pub mod editor;
 pub mod project;
 pub mod socket;
 pub mod theme;
-pub mod toolbars;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

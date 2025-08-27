@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use bytes::{Buf, BufMut, BytesMut};
 use cfgrammar::Span;
 use futures::{SinkExt, StreamExt};
@@ -7,6 +9,7 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GuiToLspMessage {
+    ProjectMetadataReq,
     SelectedRect(SelectedRectMessage),
 }
 
@@ -18,7 +21,13 @@ pub struct SelectedRectMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LspToGuiMessage {
-    ByeBye,
+    ProjectMetadataRes(ProjectMetadataRes),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectMetadataRes {
+    root: PathBuf,
+    code: String,
 }
 
 #[derive(Debug)]
