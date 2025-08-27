@@ -471,9 +471,8 @@ impl<'a> AstTransformer<'a> for VarIdTyPass<'a> {
     }
 }
 
-#[derive_where(Debug, Clone)]
-pub struct CompileInput<'a, T: AstMetadata> {
-    pub ast: &'a Ast<'a, T>,
+#[derive(Debug, Clone)]
+pub struct CompileInput<'a> {
     pub cell: &'a str,
     pub params: HashMap<&'a str, f64>,
 }
@@ -500,6 +499,8 @@ pub struct Rect<T> {
 
 type FrameId = u64;
 type ValueId = u64;
+type CellId = u64;
+type CellValueId = (CellId, ValueId);
 
 #[derive(Clone, Default)]
 struct Frame {
@@ -508,21 +509,29 @@ struct Frame {
 }
 
 struct ExecPass<'a> {
-    solver: Solver,
+    ast: &'a Ast<'a, VarIdTyMetadata>,
+    solvers: HashMap<CellId, Solver>,
     values: HashMap<ValueId, DeferValue<'a, VarIdTyMetadata>>,
-    deferred: IndexSet<ValueId>,
-    emit: Vec<ValueId>,
+    deferred: IndexSet<CellValueId>,
+    emit: Vec<CellValueId>,
     frames: HashMap<FrameId, Frame>,
     nil_value: ValueId,
     global_frame: FrameId,
     next_id: u64,
     solve_iters: u64,
+    // A stack of cells being evaluated.
+    //
+    // The first element of this stack is the root cell.
+    // the last element of this stack is the current cell.
+    partial_cells: Vec<CellId>,
+    // TODO: map of cell params to solved cells + cell ID
 }
 
 impl<'a> ExecPass<'a> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ast: &'a Ast<'a, VarIdTyMetadata>) -> Self {
         Self {
-            solver: Solver::new(),
+            ast,
+            solvers: HashMap::new(),
             values: HashMap::from_iter([(1, DeferValue::Ready(Value::None))]),
             deferred: Default::default(),
             frames: HashMap::from_iter([(0, Frame::default())]),
@@ -531,6 +540,7 @@ impl<'a> ExecPass<'a> {
             global_frame: 0,
             next_id: 2,
             solve_iters: 0,
+            partial_cells: Vec::new(),
         }
     }
 
@@ -544,7 +554,15 @@ impl<'a> ExecPass<'a> {
     }
 
     pub(crate) fn execute(mut self, input: CompileInput<'a, VarIdTyMetadata>) -> CompiledCell {
-        self.execute_start(input);
+        self.execute_cell(input.cell, input.params)
+    }
+
+    pub(crate) fn execute_cell(
+        &mut self,
+        cell: &'a str,
+        params: HashMap<&'a str, f64>,
+    ) -> CompiledCell {
+        self.execute_start(cell, params);
         let mut require_progress = false;
         let mut progress = false;
         while !self.deferred.is_empty() {
@@ -618,8 +636,8 @@ impl<'a> ExecPass<'a> {
         id
     }
 
-    fn execute_start(&mut self, input: CompileInput<'a, VarIdTyMetadata>) {
-        for decl in &input.ast.decls {
+    fn execute_start(&mut self, cell: &'a str, params: HashMap<&'a str, f64>) {
+        for decl in &self.ast.decls {
             if let Decl::Fn(f) = decl {
                 let vid = self.value_id();
                 self.values
@@ -631,7 +649,7 @@ impl<'a> ExecPass<'a> {
                     .insert(f.metadata, vid);
             }
         }
-        let cell = input
+        let cell = self
             .ast
             .decls
             .iter()
@@ -641,10 +659,10 @@ impl<'a> ExecPass<'a> {
                         name: Ident { name, .. },
                         ..
                     },
-                ) if *name == input.cell => Some(v),
+                ) if *name == cell => Some(v),
                 _ => None,
             })
-            .expect("top cell not found");
+            .expect("cell not found");
 
         for stmt in cell.stmts.iter() {
             self.eval_stmt(self.global_frame, stmt);
