@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{
-        tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
-    sync::{oneshot::Sender, Mutex},
+    sync::{Mutex, oneshot::Sender},
 };
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 

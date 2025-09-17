@@ -12,7 +12,7 @@ use rpc::{GuiToLsp, LspServer, LspToGuiClient};
 use serde_json::Value;
 use tarpc::{
     context,
-    server::{self, incoming::Incoming, Channel},
+    server::{self, Channel, incoming::Incoming},
     tokio_serde::formats::Json,
 };
 use tokio::net::TcpListener;
@@ -33,51 +33,9 @@ pub struct SharedState {
     gui_client: Arc<Mutex<Option<LspToGuiClient>>>,
 }
 
-<<<<<<< HEAD
-async fn handle_gui_r(client: Client, uri: Url, gui_r: OwnedReadHalf) {
-    let mut sock = LspFromGui::new(gui_r);
-    let src = tokio::fs::read_to_string(uri.to_file_path().unwrap())
-        .await
-        .unwrap();
-    let line_lengths = std::iter::once(0)
-        .chain(src.lines().map(|s| s.len() + 1).scan(0, |state, x| {
-            *state += x;
-            Some(*state)
-        }))
-        .collect::<Vec<_>>();
-    let char2pos = |c: usize| {
-        let line_idx = match line_lengths.binary_search(&c) {
-            Ok(index) | Err(index) => index,
-        }
-        .saturating_sub(1);
-        Position::new(line_idx as u32, (c - line_lengths[line_idx]) as u32)
-    };
-    loop {
-        let msg = sock.read().await;
-        match msg {
-            GuiToLspMessage::SelectedRect(msg) => {
-                if let Some(span) = msg.span {
-                    let diagnostics = vec![Diagnostic {
-                        range: Range {
-                            start: char2pos(span.start()),
-                            end: char2pos(span.end()),
-                        },
-                        severity: Some(DiagnosticSeverity::INFORMATION),
-                        message: "selected rect".to_string(),
-                        ..Default::default()
-                    }];
-                    client
-                        .publish_diagnostics(uri.clone(), diagnostics, None)
-                        .await;
-                }
-            }
-        }
-    }
-=======
 #[derive(Debug)]
 struct Backend {
     state: SharedState,
->>>>>>> origin/main
 }
 
 // async fn handle_gui_r(client: Client, uri: Url, gui_r: OwnedReadHalf) {

@@ -23,11 +23,7 @@ struct CellId {
 }
 
 /// Persistent state associated with a specific parametrization of a p-cell in a project.
-<<<<<<< HEAD
-pub struct CellState {
-=======
 pub struct Cell {
->>>>>>> origin/main
     pub rects: Vec<Rect<Var>>,
     pub solved_values: Vec<(Var, f64)>,
     // TODO: Use null space vectors to allow dragging coordinates.
@@ -38,20 +34,6 @@ pub struct Cell {
 /// Persistent state of project (i.e. anything that is saved in GUI project file).
 ///
 /// GUI project file is saved in root directory of the associated Argon project.
-<<<<<<< HEAD
-pub struct ProjectState {
-    pub root: PathBuf,
-    pub code: String,
-    /// Specific parametrizations of p-cells that have been compiled.
-    pub cells: HashMap<CellId, CellData>,
-    /// Cells that are open in the GUI.
-    pub open_cells: Vec<CellId>,
-    pub lsp_client: GuiToLsp<TcpStream>,
-}
-
-impl Project {
-    pub fn new(cx: &mut Context<Self>, lsp_client: GuiToLsp<TcpStream>) -> Self {
-=======
 pub struct Project {
     pub root: PathBuf,
     pub code: String,
@@ -64,7 +46,6 @@ pub struct Project {
 impl Project {
     pub fn new(cx: &mut Context<Self>) -> Self {
         // TODO: Get project metadata from lsp.
->>>>>>> origin/main
         Self {
             root: PathBuf::from(""),
             code: "".to_string(),
