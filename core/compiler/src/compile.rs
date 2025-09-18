@@ -566,7 +566,7 @@ impl<'a> AstTransformer<'a> for VarIdTyPass<'a> {
 #[derive(Debug, Clone)]
 pub struct CompileInput<'a> {
     pub cell: &'a str,
-    pub params: HashMap<&'a str, f64>,
+    pub params: Vec<f64>,
 }
 
 pub type ScopeId = u64;
@@ -661,22 +661,23 @@ impl<'a> ExecPass<'a> {
         }
     }
 
-    pub(crate) fn execute_cell(&mut self, cell: &'a str, params: HashMap<&'a str, f64>) -> CellId {
+    pub(crate) fn execute_cell(&mut self, cell: &'a str, params: Vec<f64>) -> CellId {
         let cell_id = self.alloc_id();
         self.partial_cells.push_back(cell_id);
-        assert!(self
-            .cell_states
-            .insert(
-                cell_id,
-                CellState {
-                    solve_iters: 0,
-                    solver: Solver::new(),
-                    fields: HashMap::new(),
-                    emit: Vec::new(),
-                    deferred: Default::default(),
-                }
-            )
-            .is_none());
+        assert!(
+            self.cell_states
+                .insert(
+                    cell_id,
+                    CellState {
+                        solve_iters: 0,
+                        solver: Solver::new(),
+                        fields: HashMap::new(),
+                        emit: Vec::new(),
+                        deferred: Default::default(),
+                    }
+                )
+                .is_none()
+        );
         self.visit_cell_body(cell_id, cell, params);
         let mut require_progress = false;
         let mut progress = false;
@@ -794,38 +795,42 @@ impl<'a> ExecPass<'a> {
             match decl {
                 Decl::Fn(f) => {
                     let vid = self.value_id();
-                    assert!(self
-                        .values
-                        .insert(vid, DeferValue::Ready(Value::Fn(f.clone())))
-                        .is_none());
-                    assert!(self
-                        .frames
-                        .get_mut(&self.global_frame)
-                        .unwrap()
-                        .bindings
-                        .insert(f.metadata, vid)
-                        .is_none());
+                    assert!(
+                        self.values
+                            .insert(vid, DeferValue::Ready(Value::Fn(f.clone())))
+                            .is_none()
+                    );
+                    assert!(
+                        self.frames
+                            .get_mut(&self.global_frame)
+                            .unwrap()
+                            .bindings
+                            .insert(f.metadata, vid)
+                            .is_none()
+                    );
                 }
                 Decl::Cell(c) => {
                     let vid = self.value_id();
-                    assert!(self
-                        .values
-                        .insert(vid, DeferValue::Ready(Value::CellFn(c.clone())))
-                        .is_none());
-                    assert!(self
-                        .frames
-                        .get_mut(&self.global_frame)
-                        .unwrap()
-                        .bindings
-                        .insert(c.metadata, vid)
-                        .is_none());
+                    assert!(
+                        self.values
+                            .insert(vid, DeferValue::Ready(Value::CellFn(c.clone())))
+                            .is_none()
+                    );
+                    assert!(
+                        self.frames
+                            .get_mut(&self.global_frame)
+                            .unwrap()
+                            .bindings
+                            .insert(c.metadata, vid)
+                            .is_none()
+                    );
                 }
                 _ => (),
             }
         }
     }
 
-    fn visit_cell_body(&mut self, cell_id: CellId, cell: &'a str, params: HashMap<&'a str, f64>) {
+    fn visit_cell_body(&mut self, cell_id: CellId, cell: &'a str, params: Vec<f64>) {
         // TODO: use params
         let cell = self
             .ast
@@ -1256,21 +1261,7 @@ impl<'a> ExecPass<'a> {
                         })
                         .collect::<Option<Vec<f64>>>();
                     if let Some(arg_vals) = arg_vals {
-                        let val = &self.values[&self
-                            .lookup(
-                                vref.frame,
-                                c.expr
-                                    .metadata
-                                    .0
-                                    .expect("no var ID assigned to cell generator being called"),
-                            )
-                            .unwrap()]
-                            .as_ref()
-                            .unwrap_ready()
-                            .as_ref()
-                            .unwrap_cell_fn();
-                        let params = val.args.iter().map(|v| v.name.name).zip(arg_vals).collect();
-                        let cell = self.execute_cell(cell, params);
+                        let cell = self.execute_cell(cell, arg_vals);
                         self.values.insert(vid, Defer::Ready(Value::Cell(cell)));
                         true
                     } else {
@@ -1594,7 +1585,7 @@ pub struct Instance {
     pub angle: Rotation,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SolvedInstance {
     pub x: f64,
     pub y: f64,
@@ -1604,7 +1595,7 @@ pub struct SolvedInstance {
 }
 
 #[enumify]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SolvedValue {
     Int(i64),
     Float(f64),
@@ -1612,13 +1603,13 @@ pub enum SolvedValue {
     Instance(SolvedInstance),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledCell {
     pub values: Vec<SolvedValue>,
     pub fields: HashMap<String, SolvedValue>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompileOutput {
     pub cells: HashMap<CellId, CompiledCell>,
     pub top: CellId,
