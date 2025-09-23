@@ -1,13 +1,14 @@
-use std::collections::HashMap;
-
-use compiler::compile::CellId;
+use compiler::compile::SolvedValue;
 use gpui::prelude::*;
 use gpui::*;
-use itertools::Itertools;
+use indexmap::IndexMap;
 
-use crate::theme::THEME;
+use crate::{
+    editor::{CompileOutputState, ScopeAddress},
+    theme::THEME,
+};
 
-use super::{EditorState, LayerState, ScopeTree};
+use super::{EditorState, LayerState};
 
 pub struct TitleBar;
 
@@ -45,7 +46,7 @@ impl Render for ToolBar {
 }
 
 pub struct LayerSideBar {
-    layers: Entity<HashMap<SharedString, LayerState>>,
+    layers: Entity<IndexMap<SharedString, LayerState>>,
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
 }
@@ -85,87 +86,69 @@ impl Render for LayerSideBar {
                     .items_start()
                     .id("layers_scroll_vert")
                     .overflow_scroll()
-                    .child(
-                        div().flex().child(
-                            div().flex().flex_col().children(
-                                self.layers
-                                    .read(cx)
-                                    .values()
-                                    .sorted_by_key(|layer| layer.z)
-                                    .map(|layer| {
-                                        let layers_clone = layers_clone.clone();
-                                        let name = layer.name.clone();
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "layer_control_{}",
-                                                layer.z
-                                            ))) // TODO: does this need to be unique? seems to work as is
-                                            .flex()
-                                            .on_click(move |_event, _window, cx| {
-                                                layers_clone.update(cx, |state, cx| {
-                                                    state.get_mut(&name).unwrap().visible =
-                                                        !state[&name].visible;
-                                                    cx.notify();
-                                                })
-                                            })
-                                            .child(format!(
-                                                "{} - {}",
-                                                &layer.name,
-                                                if layer.visible { "V" } else { "NV" }
-                                            ))
-                                    }),
-                            ),
-                        ),
-                    ),
+                    .child(div().flex().child(div().flex().flex_col().children(
+                        self.layers.read(cx).values().map(|layer| {
+                            let layers_clone = layers_clone.clone();
+                            let name = layer.name.clone();
+                            div()
+                                .id(SharedString::from(format!("layer_control_{}", layer.z))) // TODO: does this need to be unique? seems to work as is
+                                .flex()
+                                .on_click(move |_event, _window, cx| {
+                                    layers_clone.update(cx, |state, cx| {
+                                        state.get_mut(&name).unwrap().visible =
+                                            !state[&name].visible;
+                                        cx.notify();
+                                    })
+                                })
+                                .child(format!(
+                                    "{} - {}",
+                                    &layer.name,
+                                    if layer.visible { "V" } else { "NV" }
+                                ))
+                        }),
+                    ))),
             )
     }
 }
 
 pub struct HierarchySideBar {
-    scopes: Entity<ScopeTree>,
-    selected_scope: Entity<Option<CellId>>,
+    solved_cell: Entity<Option<CompileOutputState>>,
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
 }
 
 impl HierarchySideBar {
     pub fn new(cx: &mut Context<Self>, state: &Entity<EditorState>) -> Self {
-        let scopes = state.read(cx).scopes.clone();
-        let selected_scope = state.read(cx).selected_scope.clone();
-        let subscriptions = vec![
-            cx.observe(&scopes, |_, _, cx| cx.notify()),
-            cx.observe(&selected_scope, |_, _, cx| cx.notify()),
-        ];
+        let solved_cell = state.read(cx).solved_cell.clone();
+        let subscriptions = vec![cx.observe(&solved_cell, |_, _, cx| cx.notify())];
         Self {
-            scopes,
-            selected_scope,
+            solved_cell,
             subscriptions,
         }
     }
 
     fn render_scopes_helper(
         &mut self,
-        cx: &mut gpui::Context<Self>,
+        solved_cell: &CompileOutputState,
         scopes: &mut Vec<Div>,
-        scope: CellId,
+        scope: ScopeAddress,
         depth: usize,
     ) {
-        let scopes_clone = self.scopes.clone();
-        let scope_state = &self.scopes.read(cx).state[&scope];
-        let selected_scope_clone = self.selected_scope.clone();
-        let selected_scope_state = self.selected_scope.read(cx);
+        let solved_cell_clone_1 = self.solved_cell.clone();
+        let solved_cell_clone_2 = self.solved_cell.clone();
+        let scope_state = &solved_cell.state[&scope];
         scopes.push(
             div()
                 .flex()
                 .w_full()
-                .bg(if &Some(scope) == selected_scope_state {
+                .bg(if scope == solved_cell.selected_scope {
                     rgba(0x00000099)
                 } else {
                     rgba(0)
                 })
                 .child(
                     div()
-                        .id(SharedString::from(format!("test_{scope}")))
+                        .id(SharedString::from(format!("test_{scope:?}")))
                         .flex_1()
                         .overflow_hidden()
                         .child(format!(
@@ -174,34 +157,70 @@ impl HierarchySideBar {
                             &scope_state.name,
                         ))
                         .on_click(move |_event, _window, cx| {
-                            selected_scope_clone.update(cx, |state, cx| {
-                                *state = Some(scope);
-                                cx.notify();
+                            solved_cell_clone_1.update(cx, |state, cx| {
+                                if let Some(state) = state.as_mut() {
+                                    state.selected_scope = scope;
+                                    cx.notify();
+                                }
                             })
                         }),
                 )
                 .child(
                     div()
                         .child(if scope_state.visible { "--V" } else { "NV" })
-                        .id(SharedString::from(format!("scope_control_{scope}",)))
+                        .id(SharedString::from(format!("scope_control_{scope:?}",)))
                         .on_click(move |_event, _window, cx| {
-                            scopes_clone.update(cx, |state, cx| {
-                                state.state.get_mut(&scope).unwrap().visible =
-                                    !state.state[&scope].visible;
-                                cx.notify();
+                            solved_cell_clone_2.update(cx, |state, cx| {
+                                if let Some(state) = state.as_mut() {
+                                    state.state.get_mut(&scope).unwrap().visible =
+                                        !state.state[&scope].visible;
+                                    cx.notify();
+                                }
                             })
                         }),
                 ),
         );
-        for scope in scope_state.children.clone() {
-            self.render_scopes_helper(cx, scopes, scope, depth + 1);
+        let scope_info = &solved_cell.output.cells[&scope.cell].scopes[&scope.scope];
+        for elt in scope_info.elts.clone() {
+            if let SolvedValue::Instance(inst) = &elt {
+                let scope = solved_cell.output.cells[&inst.cell].root;
+                self.render_scopes_helper(
+                    solved_cell,
+                    scopes,
+                    ScopeAddress {
+                        scope,
+                        cell: inst.cell,
+                    },
+                    depth + 1,
+                );
+            }
+        }
+        for child_scope in scope_info.children.clone() {
+            self.render_scopes_helper(
+                solved_cell,
+                scopes,
+                ScopeAddress {
+                    scope: child_scope,
+                    cell: scope.cell,
+                },
+                depth + 1,
+            );
         }
     }
 
     fn render_scopes(&mut self, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
         let mut scopes = Vec::new();
-        if let Some(root) = self.scopes.read(cx).root {
-            self.render_scopes_helper(cx, &mut scopes, root, 0);
+        if let Some(state) = self.solved_cell.read(cx) {
+            let scope = state.output.cells[&state.output.top].root;
+            self.render_scopes_helper(
+                state,
+                &mut scopes,
+                ScopeAddress {
+                    scope,
+                    cell: state.output.top,
+                },
+                0,
+            );
         }
         div()
             .flex()

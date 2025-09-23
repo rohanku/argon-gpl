@@ -1,5 +1,13 @@
-%start Decls
+%start Ast
 %%
+Ast -> Result<Ast<'input, ParseMetadata>, ()>:
+  Decls {
+    Ok(Ast {
+      decls: $1?,
+      span: $span,
+    })
+  };
+
 Decls -> Result<Vec<Decl<'input, ParseMetadata>>, ()>:
   Decls Decl {
     let mut __tmp = $1?;
@@ -105,6 +113,7 @@ CellDecl -> Result<CellDecl<'input, ParseMetadata>, ()>
       name: $2?,
       args: $4?,
       scope: $6?,
+      span: $span,
       metadata: (),
     })
   }
@@ -118,6 +127,7 @@ FnDecl -> Result<FnDecl<'input, ParseMetadata>, ()>
       args: $4?,
       scope: $8?,
       return_ty: $7?,
+      span: $span,
       metadata: (),
     })
   }
@@ -159,10 +169,10 @@ Scope -> Result<Scope<'input, ParseMetadata>, ()>
     if let Some(Statement::Expr { value, semicolon }) = __stmts.last().cloned() && !semicolon {
       __stmts.pop().unwrap();
       return Ok(Scope {
-          span: $span,
-          stmts: __stmts,
-          tail: Some(value),
-          metadata: (),
+        span: $span,
+        stmts: __stmts,
+        tail: Some(value),
+        metadata: (),
       })
     }
     Ok(Scope {

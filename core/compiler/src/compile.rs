@@ -156,7 +156,10 @@ impl<'a> VarIdTyPass<'a> {
             }
         }
 
-        Ast { decls }
+        Ast {
+            decls,
+            span: self.ast.span,
+        }
     }
 
     fn declare_fn_decl(&mut self, input: &FnDecl<'a, ParseMetadata>) {
@@ -266,6 +269,7 @@ impl<'a> AstTransformer<'a> for VarIdTyPass<'a> {
             args,
             return_ty,
             scope,
+            span: input.span,
             metadata: varid,
         }
     }
@@ -318,6 +322,7 @@ impl<'a> AstTransformer<'a> for VarIdTyPass<'a> {
             name,
             scope,
             args,
+            span: input.span,
             metadata: vid,
         }
     }
@@ -626,7 +631,6 @@ pub struct CompileInput<'a> {
     pub params: Vec<f64>,
 }
 
-pub type ScopeId = u64;
 pub type VarId = u64;
 pub type ConstraintVarId = u64;
 
@@ -650,18 +654,37 @@ type FrameId = u64;
 type ValueId = u64;
 pub type CellId = u64;
 
-#[derive(Clone, Default)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+pub struct ScopeId(u64);
+
+#[derive(Clone)]
 struct Frame {
     bindings: HashMap<VarId, ValueId>,
     parent: Option<FrameId>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Emit {
+    value: ValueId,
+    scope: ScopeId,
+    source: SourceInfo,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ExecScope {
+    parent: Option<ScopeId>,
+    name: String,
+    span: cfgrammar::Span,
 }
 
 struct CellState {
     solve_iters: u64,
     solver: Solver,
     fields: HashMap<String, ValueId>,
-    emit: Vec<ValueId>,
+    emit: Vec<Emit>,
     deferred: IndexSet<ValueId>,
+    root_scope: ScopeId,
+    scopes: HashMap<ScopeId, ExecScope>,
 }
 
 struct ExecPass<'a> {
@@ -686,7 +709,13 @@ impl<'a> ExecPass<'a> {
             ast,
             cell_states: HashMap::new(),
             values: HashMap::from_iter([(1, DeferValue::Ready(Value::None))]),
-            frames: HashMap::from_iter([(0, Frame::default())]),
+            frames: HashMap::from_iter([(
+                0,
+                Frame {
+                    bindings: Default::default(),
+                    parent: None,
+                },
+            )]),
             nil_value: 1,
             global_frame: 0,
             next_id: 2,
@@ -716,7 +745,37 @@ impl<'a> ExecPass<'a> {
         })
     }
 
-    pub(crate) fn execute_cell(&mut self, cell: &'a str, params: Vec<f64>) -> CellId {
+    pub(crate) fn execute_cell(&mut self, cell: &'a str, _params: Vec<f64>) -> CellId {
+        // TODO: use params
+        let cell_decl = self
+            .ast
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                Decl::Cell(
+                    v @ CellDecl {
+                        name: Ident { name, .. },
+                        ..
+                    },
+                ) if *name == cell => Some(v),
+                _ => None,
+            })
+            .expect("cell not found");
+
+        let frame = Frame {
+            bindings: Default::default(),
+            parent: Some(self.global_frame),
+        };
+        let fid = self.frame_id();
+        self.frames.insert(fid, frame);
+
+        let root_scope = ExecScope {
+            span: cell_decl.span,
+            name: format!("cell {cell}"),
+            parent: None,
+        };
+        let root_scope_id = self.scope_id();
+
         let cell_id = self.alloc_id();
         self.partial_cells.push_back(cell_id);
         assert!(
@@ -729,11 +788,34 @@ impl<'a> ExecPass<'a> {
                         fields: HashMap::new(),
                         emit: Vec::new(),
                         deferred: Default::default(),
+                        scopes: HashMap::from_iter([(root_scope_id, root_scope)]),
+                        root_scope: root_scope_id,
                     }
                 )
                 .is_none()
         );
-        self.visit_cell_body(cell_id, cell, params);
+
+        for stmt in cell_decl.scope.stmts.iter() {
+            match stmt {
+                Statement::LetBinding(binding) => {
+                    let value = self.visit_expr(cell_id, fid, root_scope_id, &binding.value);
+                    self.frames
+                        .get_mut(&fid)
+                        .unwrap()
+                        .bindings
+                        .insert(binding.metadata, value);
+                    self.cell_states
+                        .get_mut(&cell_id)
+                        .unwrap()
+                        .fields
+                        .insert(binding.name.name.to_string(), value);
+                }
+                Statement::Expr { value, .. } => {
+                    self.visit_expr(cell_id, fid, root_scope_id, value);
+                }
+            }
+        }
+
         let mut require_progress = false;
         let mut progress = false;
         while !self.cell_state(cell_id).deferred.is_empty() {
@@ -772,7 +854,7 @@ impl<'a> ExecPass<'a> {
 
     fn emit(&mut self, cell: CellId) -> CompiledCell {
         let state = self.cell_states.get(&cell).expect("cell not found");
-        let emit_val = |vid: ValueId| {
+        let emit_field = |vid: ValueId| {
             let value = &self.values[&vid];
             let value = value.as_ref().unwrap_ready();
             match value {
@@ -801,19 +883,84 @@ impl<'a> ExecPass<'a> {
                 _ => None,
             }
         };
-        let values = state
-            .emit
-            .iter()
-            .copied()
-            .map(|v| emit_val(v).unwrap())
-            .collect();
         let fields = state
             .fields
             .iter()
-            .map(|(k, v)| (k.clone(), emit_val(*v)))
+            .map(|(k, v)| (k.clone(), emit_field(*v)))
             .filter_map(|(k, v)| v.map(|v| (k, v)))
             .collect();
-        CompiledCell { values, fields }
+        let mut ccell = CompiledCell {
+            scopes: HashMap::new(),
+            root: state.root_scope,
+            fields,
+        };
+        ccell.scopes.insert(
+            state.root_scope,
+            CompiledScope {
+                children: Default::default(),
+                elts: Vec::new(),
+                name: state.scopes[&state.root_scope].name.clone(),
+                span: state.scopes[&state.root_scope].span,
+            },
+        );
+
+        for emit in state.emit.iter() {
+            let mut scope = emit.scope;
+            while scope != state.root_scope {
+                ccell.scopes.entry(scope).or_insert_with(|| CompiledScope {
+                    span: state.scopes[&scope].span,
+                    children: Default::default(),
+                    name: state.scopes[&scope].name.clone(),
+                    elts: Default::default(),
+                });
+                let parent = state.scopes[&scope]
+                    .parent
+                    .expect("non-root frame must have parent");
+                let pf = ccell.scopes.entry(parent).or_insert_with(|| CompiledScope {
+                    span: state.scopes[&parent].span,
+                    children: Default::default(),
+                    name: state.scopes[&parent].name.clone(),
+                    elts: Default::default(),
+                });
+                pf.children.insert(scope);
+                scope = parent;
+            }
+            let value = &self.values[&emit.value];
+            let value = value.as_ref().unwrap_ready();
+            let v = match value {
+                Value::Linear(l) => Some(SolvedValue::Float(state.solver.eval_expr(l).unwrap())),
+                Value::Rect(rect) => Some(SolvedValue::Rect(Rect {
+                    layer: rect.layer.clone(),
+                    x0: state.solver.value_of(rect.x0).unwrap(),
+                    y0: state.solver.value_of(rect.y0).unwrap(),
+                    x1: state.solver.value_of(rect.x1).unwrap(),
+                    y1: state.solver.value_of(rect.y1).unwrap(),
+                    source: Some(emit.source.clone()),
+                })),
+                Value::Int(x) => Some(SolvedValue::Int(*x)),
+                Value::Inst(inst) => Some(SolvedValue::Instance(SolvedInstance {
+                    x: state.solver.value_of(inst.x).unwrap(),
+                    y: state.solver.value_of(inst.y).unwrap(),
+                    angle: inst.angle,
+                    reflect: false,
+                    cell: *self.values[&inst.cell]
+                        .as_ref()
+                        .unwrap_ready()
+                        .as_ref()
+                        .unwrap_cell(),
+                    cell_vid: inst.cell,
+                })),
+                _ => None,
+            };
+            ccell
+                .scopes
+                .get_mut(&emit.scope)
+                .unwrap()
+                .elts
+                .push(v.expect("unable to emit value"));
+        }
+
+        ccell
     }
 
     fn value_id(&mut self) -> ValueId {
@@ -832,6 +979,10 @@ impl<'a> ExecPass<'a> {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    fn scope_id(&mut self) -> ScopeId {
+        ScopeId(self.alloc_id())
     }
 
     fn cell_state(&self, cell_id: CellId) -> &CellState {
@@ -886,56 +1037,16 @@ impl<'a> ExecPass<'a> {
         }
     }
 
-    fn visit_cell_body(&mut self, cell_id: CellId, cell: &'a str, _params: Vec<f64>) {
-        // TODO: use params
-        let cell = self
-            .ast
-            .decls
-            .iter()
-            .find_map(|d| match d {
-                Decl::Cell(
-                    v @ CellDecl {
-                        name: Ident { name, .. },
-                        ..
-                    },
-                ) if *name == cell => Some(v),
-                _ => None,
-            })
-            .expect("cell not found");
-
-        let frame = Frame {
-            bindings: Default::default(),
-            parent: Some(self.global_frame),
-        };
-        let fid = self.frame_id();
-        self.frames.insert(fid, frame);
-
-        for stmt in cell.scope.stmts.iter() {
-            match stmt {
-                Statement::LetBinding(binding) => {
-                    let value = self.visit_expr(cell_id, fid, &binding.value);
-                    self.frames
-                        .get_mut(&fid)
-                        .unwrap()
-                        .bindings
-                        .insert(binding.metadata, value);
-                    self.cell_states
-                        .get_mut(&cell_id)
-                        .unwrap()
-                        .fields
-                        .insert(binding.name.name.to_string(), value);
-                }
-                Statement::Expr { value, .. } => {
-                    self.visit_expr(cell_id, fid, value);
-                }
-            }
-        }
-    }
-
-    fn eval_stmt(&mut self, cell: CellId, frame: FrameId, stmt: &Statement<'a, VarIdTyMetadata>) {
+    fn eval_stmt(
+        &mut self,
+        cell: CellId,
+        frame: FrameId,
+        scope: ScopeId,
+        stmt: &Statement<'a, VarIdTyMetadata>,
+    ) {
         match stmt {
             Statement::LetBinding(binding) => {
-                let value = self.visit_expr(cell, frame, &binding.value);
+                let value = self.visit_expr(cell, frame, scope, &binding.value);
                 self.frames
                     .get_mut(&frame)
                     .unwrap()
@@ -943,15 +1054,51 @@ impl<'a> ExecPass<'a> {
                     .insert(binding.metadata, value);
             }
             Statement::Expr { value, .. } => {
-                self.visit_expr(cell, frame, value);
+                self.visit_expr(cell, frame, scope, value);
             }
         }
+    }
+
+    fn create_exec_scope(
+        &mut self,
+        cell_id: CellId,
+        parent: ScopeId,
+        name: impl Into<String>,
+        span: cfgrammar::Span,
+    ) -> ScopeId {
+        let id = self.scope_id();
+        self.cell_state_mut(cell_id).scopes.insert(
+            id,
+            ExecScope {
+                parent: Some(parent),
+                name: name.into(),
+                span,
+            },
+        );
+        id
+    }
+
+    fn visit_scope_expr_inner(
+        &mut self,
+        cell_id: CellId,
+        frame: FrameId,
+        scope: ScopeId,
+        s: &Scope<'a, VarIdTyMetadata>,
+    ) -> ValueId {
+        for stmt in &s.stmts {
+            self.eval_stmt(cell_id, frame, scope, stmt);
+        }
+        s.tail
+            .as_ref()
+            .map(|tail| self.visit_expr(cell_id, frame, scope, tail))
+            .unwrap_or(self.nil_value)
     }
 
     fn visit_expr(
         &mut self,
         cell_id: CellId,
         frame: FrameId,
+        scope: ScopeId,
         expr: &Expr<'a, VarIdTyMetadata>,
     ) -> ValueId {
         let partial_eval_state = match expr {
@@ -971,9 +1118,14 @@ impl<'a> ExecPass<'a> {
                 return self.frames[&frame].bindings[&var_id];
             }
             Expr::Emit(e) => {
-                let vid = self.visit_expr(cell_id, frame, &e.value);
-                self.cell_state_mut(cell_id).emit.push(vid);
-                return vid;
+                let value = self.visit_expr(cell_id, frame, scope, &e.value);
+                let id = self.alloc_id();
+                self.cell_state_mut(cell_id).emit.push(Emit {
+                    scope,
+                    value,
+                    source: SourceInfo { span: e.span, id },
+                });
+                return value;
             }
             Expr::Call(c) => {
                 if ["rect", "crect", "float", "inst", "eq"].contains(&c.func.name) {
@@ -984,13 +1136,13 @@ impl<'a> ExecPass<'a> {
                                 .args
                                 .posargs
                                 .iter()
-                                .map(|arg| self.visit_expr(cell_id, frame, arg))
+                                .map(|arg| self.visit_expr(cell_id, frame, scope, arg))
                                 .collect(),
                             kwargs: c
                                 .args
                                 .kwargs
                                 .iter()
-                                .map(|arg| self.visit_expr(cell_id, frame, &arg.value))
+                                .map(|arg| self.visit_expr(cell_id, frame, scope, &arg.value))
                                 .collect(),
                         },
                     }))
@@ -999,7 +1151,7 @@ impl<'a> ExecPass<'a> {
                         .args
                         .posargs
                         .iter()
-                        .map(|arg| self.visit_expr(cell_id, frame, arg))
+                        .map(|arg| self.visit_expr(cell_id, frame, scope, arg))
                         .collect_vec();
                     let val = &self.values[&self
                         .lookup(
@@ -1021,10 +1173,16 @@ impl<'a> ExecPass<'a> {
                             for (arg_val, arg_decl) in arg_vals.iter().zip(&val.args) {
                                 call_frame.bindings.insert(arg_decl.metadata.0, *arg_val);
                             }
-                            let scope = val.scope.clone();
+                            let new_scope = val.scope.clone();
+                            let scope = self.create_exec_scope(
+                                cell_id,
+                                scope,
+                                format!("fn {}", val.name.name),
+                                val.span,
+                            );
                             let fid = self.frame_id();
                             self.frames.insert(fid, call_frame);
-                            return self.visit_expr(cell_id, fid, &Expr::Scope(Box::new(scope)));
+                            return self.visit_scope_expr_inner(cell_id, fid, scope, &new_scope);
                         }
                         ValueRef::CellFn(_) => PartialEvalState::Call(Box::new(PartialCallExpr {
                             expr: c.clone(),
@@ -1034,7 +1192,7 @@ impl<'a> ExecPass<'a> {
                                     .args
                                     .kwargs
                                     .iter()
-                                    .map(|arg| self.visit_expr(cell_id, frame, &arg.value))
+                                    .map(|arg| self.visit_expr(cell_id, frame, scope, &arg.value))
                                     .collect(),
                             },
                         })),
@@ -1043,29 +1201,23 @@ impl<'a> ExecPass<'a> {
                 }
             }
             Expr::If(if_expr) => {
-                let cond = self.visit_expr(cell_id, frame, &if_expr.cond);
+                let cond = self.visit_expr(cell_id, frame, scope, &if_expr.cond);
                 PartialEvalState::If(Box::new(PartialIfExpr {
                     expr: (**if_expr).clone(),
                     state: IfExprState::Cond(cond),
                 }))
             }
             Expr::Comparison(comparison_expr) => {
-                let left = self.visit_expr(cell_id, frame, &comparison_expr.left);
-                let right = self.visit_expr(cell_id, frame, &comparison_expr.right);
+                let left = self.visit_expr(cell_id, frame, scope, &comparison_expr.left);
+                let right = self.visit_expr(cell_id, frame, scope, &comparison_expr.right);
                 PartialEvalState::Comparison(Box::new(PartialComparisonExpr {
                     expr: (**comparison_expr).clone(),
                     state: ComparisonExprState { left, right },
                 }))
             }
             Expr::Scope(s) => {
-                for stmt in &s.stmts {
-                    self.eval_stmt(cell_id, frame, stmt);
-                }
-                return s
-                    .tail
-                    .as_ref()
-                    .map(|tail| self.visit_expr(cell_id, frame, tail))
-                    .unwrap_or(self.nil_value);
+                let scope = self.create_exec_scope(cell_id, scope, "anonymous scope", s.span);
+                return self.visit_scope_expr_inner(cell_id, frame, scope, s);
             }
             Expr::EnumValue(e) => {
                 let vid = self.value_id();
@@ -1076,19 +1228,19 @@ impl<'a> ExecPass<'a> {
                 return vid;
             }
             Expr::FieldAccess(f) => {
-                let base = self.visit_expr(cell_id, frame, &f.base);
+                let base = self.visit_expr(cell_id, frame, scope, &f.base);
                 PartialEvalState::FieldAccess(Box::new(PartialFieldAccessExpr {
                     expr: (**f).clone(),
                     state: FieldAccessExprState { base },
                 }))
             }
             Expr::BinOp(b) => {
-                let lhs = self.visit_expr(cell_id, frame, &b.left);
-                let rhs = self.visit_expr(cell_id, frame, &b.right);
+                let lhs = self.visit_expr(cell_id, frame, scope, &b.left);
+                let rhs = self.visit_expr(cell_id, frame, scope, &b.right);
                 PartialEvalState::BinOp(PartialBinOp { lhs, rhs, op: b.op })
             }
             Expr::Cast(cast) => {
-                let value = self.visit_expr(cell_id, frame, &cast.value);
+                let value = self.visit_expr(cell_id, frame, scope, &cast.value);
                 PartialEvalState::Cast(PartialCast {
                     value,
                     ty: cast.metadata.clone(),
@@ -1103,6 +1255,7 @@ impl<'a> ExecPass<'a> {
             DeferValue::Deferred(PartialEval {
                 state: partial_eval_state,
                 frame,
+                scope,
                 cell: cell_id,
             }),
         );
@@ -1204,6 +1357,7 @@ impl<'a> ExecPass<'a> {
                                         rhs: *rhs,
                                     }),
                                     frame: vref.frame,
+                                    scope: vref.scope,
                                     cell: vref.cell,
                                 }),
                             );
@@ -1370,10 +1524,24 @@ impl<'a> ExecPass<'a> {
                 IfExprState::Cond(cond) => {
                     if let Defer::Ready(val) = &self.values[&cond] {
                         if *val.as_ref().unwrap_bool() {
-                            let then = self.visit_expr(vref.cell, vref.frame, &if_.expr.then);
+                            let scope = self.create_exec_scope(
+                                vref.cell,
+                                vref.scope,
+                                "if then",
+                                if_.expr.then.span(),
+                            );
+                            let then =
+                                self.visit_expr(vref.cell, vref.frame, scope, &if_.expr.then);
                             if_.state = IfExprState::Then(then);
                         } else {
-                            let else_ = self.visit_expr(vref.cell, vref.frame, &if_.expr.else_);
+                            let scope = self.create_exec_scope(
+                                vref.cell,
+                                vref.scope,
+                                "if else",
+                                if_.expr.else_.span(),
+                            );
+                            let else_ =
+                                self.visit_expr(vref.cell, vref.frame, scope, &if_.expr.else_);
                             if_.state = IfExprState::Else(else_);
                         }
                         true
@@ -1684,8 +1852,17 @@ pub enum SolvedValue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompiledScope {
+    pub children: IndexSet<ScopeId>,
+    pub elts: Vec<SolvedValue>,
+    pub name: String,
+    pub span: cfgrammar::Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledCell {
-    pub values: Vec<SolvedValue>,
+    pub scopes: HashMap<ScopeId, CompiledScope>,
+    pub root: ScopeId,
     pub fields: HashMap<String, SolvedValue>,
 }
 
@@ -1751,6 +1928,7 @@ struct PartialEval<'a, T: AstMetadata> {
     state: PartialEvalState<'a, T>,
     frame: FrameId,
     cell: CellId,
+    scope: ScopeId,
 }
 
 #[derive(Debug, Clone)]

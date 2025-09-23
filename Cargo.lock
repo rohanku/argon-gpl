@@ -2795,6 +2795,7 @@ dependencies = [
  "futures",
  "geometry",
  "gpui",
+ "indexmap 2.11.4",
  "itertools 0.14.0",
  "lazy_static",
  "lsp-server",
