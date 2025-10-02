@@ -1,6 +1,7 @@
-use std::{collections::HashMap, time::Instant};
+use std::time::Instant;
 
 use approx::relative_eq;
+use indexmap::IndexMap;
 use itertools::{Either, Itertools};
 use nalgebra::{DMatrix, DVector};
 use ndarray_linalg::SVD;
@@ -15,10 +16,10 @@ pub struct Var(u64);
 pub struct Solver {
     next_id: u64,
     constraints: Vec<LinearExpr>,
-    solved_vars: HashMap<Var, f64>,
+    solved_vars: IndexMap<Var, f64>,
 }
 
-pub fn substitute_expr(table: &HashMap<Var, f64>, expr: &mut LinearExpr) {
+pub fn substitute_expr(table: &IndexMap<Var, f64>, expr: &mut LinearExpr) {
     let (l, r): (Vec<f64>, Vec<_>) = expr.coeffs.iter().partition_map(|a @ (coeff, var)| {
         if let Some(s) = table.get(var) {
             Either::Left(coeff * s)
@@ -133,6 +134,10 @@ impl Solver {
 
     pub fn value_of(&self, var: Var) -> Option<f64> {
         self.solved_vars.get(&var).copied()
+    }
+
+    pub fn is_solved(&self, var: Var) -> bool {
+        self.solved_vars.contains_key(&var)
     }
 
     pub fn eval_expr(&self, expr: &LinearExpr) -> Option<f64> {
