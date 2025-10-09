@@ -5,7 +5,7 @@ pub mod rpc;
 use std::{
     cmp::Reverse,
     collections::HashMap,
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     process::Stdio,
     sync::Arc,
@@ -17,12 +17,12 @@ use compiler::{
         self, CellArg, CompileInput, CompileOutput, ExecErrorCompileOutput,
         StaticErrorCompileOutput,
     },
+    config::{Config, parse_config},
     parse::{self, WorkspaceParseAst},
 };
 use futures::prelude::*;
 use indexmap::IndexMap;
 use itertools::Itertools;
-use portpicker::{is_free, pick_unused_port};
 use rpc::{GuiToLsp, LspServer, LspToGuiClient};
 use serde::{Deserialize, Serialize};
 use tarpc::{
@@ -45,6 +45,7 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct StateMut {
     root_dir: Option<PathBuf>,
+    config: Option<Config>,
     ast: WorkspaceParseAst,
     prev_diagnostics: IndexMap<Url, Vec<Diagnostic>>,
     compile_output: Option<CompileOutput>,
@@ -101,12 +102,25 @@ impl StateMut {
 
     async fn compile(&mut self, client: &Client) {
         // TODO: un-hardcode this.
-        let lyp = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../core/compiler/examples/lyp/basic.lyp"
-        );
-        let parse_output =
-            parse::parse_workspace_with_std(self.root_dir.as_ref().unwrap().join("lib.ar"));
+        let root_dir = self.root_dir.as_ref().unwrap();
+        self.config = parse_config(root_dir.join("Argon.toml")).ok();
+        let lyp = self
+            .config
+            .as_ref()
+            .map(|config| {
+                if config.lyp.is_relative() {
+                    root_dir.join(&config.lyp)
+                } else {
+                    config.lyp.clone()
+                }
+            })
+            .unwrap_or_else(|| {
+                PathBuf::from(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../core/compiler/examples/lyp/basic.lyp"
+                ))
+            });
+        let parse_output = parse::parse_workspace_with_std(root_dir.join("lib.ar"));
         let parse_errs = parse_output.static_errors();
         let ast = parse_output.best_effort_ast();
         self.ast = ast;
@@ -168,7 +182,7 @@ impl StateMut {
                                 _ => panic!("must be int or float literal for now"),
                             })
                             .collect(),
-                        lyp_file: &PathBuf::from(lyp),
+                        lyp_file: &lyp,
                     },
                 ))
             } else {
@@ -400,16 +414,16 @@ async fn spawn(fut: impl Future<Output = ()> + Send + 'static) {
 pub async fn main() {
     // Start server for communication with GUI.
     let port = 12345; // for debugging
-    let port = if is_free(port) {
-        port
+    let mut listener = if let Ok(listener) =
+        tarpc::serde_transport::tcp::listen((Ipv4Addr::LOCALHOST, 12345), Json::default).await
+    {
+        listener
     } else {
-        loop {
-            if let Some(port) = pick_unused_port() {
-                break port;
-            }
-        }
+        tarpc::serde_transport::tcp::listen((Ipv4Addr::LOCALHOST, 0), Json::default)
+            .await
+            .unwrap()
     };
-    let server_addr = (IpAddr::V6(Ipv6Addr::LOCALHOST), port).into();
+    let server_addr = listener.local_addr();
 
     // Construct actual LSP server.
     let stdin = tokio::io::stdin();
@@ -426,12 +440,6 @@ pub async fn main() {
     .custom_method("custom/set", Backend::set)
     .finish();
     let state = ext_state.unwrap();
-
-    // JSON transport is provided by the json_transport tarpc module. It makes it easy
-    // to start up a serde-powered json serialization strategy over TCP.
-    let mut listener = tarpc::serde_transport::tcp::listen(&server_addr, Json::default)
-        .await
-        .unwrap();
     listener.config_mut().max_frame_length(usize::MAX);
     let state_clone = state.clone();
     tokio::spawn(async move {
