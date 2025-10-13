@@ -58,6 +58,8 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/examples/sky130_inverter/lib.ar"
     );
+    const ARGON_ENUMERATIONS: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/examples/enumerations/lib.ar");
     const ARGON_WORKSPACE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/examples/argon_workspace/lib.ar"
@@ -431,5 +433,20 @@ mod tests {
         std::fs::create_dir_all(&work_dir).expect("failed to create dirs");
         gds.save(work_dir.join("layout.gds"))
             .expect("failed to write GDS");
+    }
+
+    #[test]
+    fn argon_enumerations() {
+        let ast = parse_workspace_with_std(ARGON_ENUMERATIONS).unwrap_asts();
+        let cell = compile(
+            &ast,
+            CompileInput {
+                cell: &["top"],
+                args: Vec::new(),
+                lyp_file: &PathBuf::from(BASIC_LYP),
+            },
+        );
+        println!("{cell:?}");
+        cell.unwrap_valid();
     }
 }
