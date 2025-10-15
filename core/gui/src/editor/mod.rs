@@ -14,11 +14,7 @@ use indexmap::IndexMap;
 use rgb::Rgb;
 use toolbars::{HierarchySideBar, LayerSideBar, TitleBar, ToolBar};
 
-use crate::{
-    editor::{canvas::RectId, input::TextInput},
-    rpc::SyncGuiToLspClient,
-    theme::THEME,
-};
+use crate::{editor::input::TextInput, rpc::SyncGuiToLspClient, theme::THEME};
 
 pub mod canvas;
 pub mod input;
@@ -55,7 +51,6 @@ pub struct ScopeAddress {
 pub struct CompileOutputState {
     pub output: CompiledData,
     pub selected_scope: ScopePath,
-    pub selected_rect: Option<RectId>,
     pub state: IndexMap<ScopePath, ScopeState>,
     pub scope_paths: IndexMap<ScopeAddress, ScopePath>,
 }
@@ -263,7 +258,6 @@ impl EditorState {
                             .then(|| cell.selected_scope.clone())
                     })
                     .unwrap_or_else(|| vec![root_scope_name.clone()]),
-                selected_rect: None,
                 state,
                 scope_paths,
             });
@@ -293,8 +287,6 @@ impl Editor {
                 lsp_client: lsp_client.clone(),
             }
         });
-        let hierarchy_sidebar = cx.new(|cx| HierarchySideBar::new(cx, &state));
-        let layer_sidebar = cx.new(|cx| LayerSideBar::new(cx, &state));
         let canvas_focus_handle = cx.focus_handle();
         let text_input_focus_handle = cx.focus_handle();
         window.focus(&canvas_focus_handle);
@@ -306,16 +298,10 @@ impl Editor {
                 text_input_focus_handle.clone(),
             )
         });
-        let text_input = cx.new(|cx| {
-            TextInput::new(
-                cx,
-                window,
-                text_input_focus_handle,
-                canvas_focus_handle,
-                canvas.read(cx).dim_tool.clone(),
-                &state,
-            )
-        });
+        let text_input =
+            cx.new(|cx| TextInput::new(cx, window, text_input_focus_handle, &state, &canvas));
+        let hierarchy_sidebar = cx.new(|cx| HierarchySideBar::new(cx, &state, &canvas));
+        let layer_sidebar = cx.new(|cx| LayerSideBar::new(cx, &state));
 
         let editor = Self {
             state,

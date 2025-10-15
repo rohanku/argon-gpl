@@ -2014,6 +2014,7 @@ impl<'a> ExecPass<'a> {
                         .unwrap_ready()
                         .as_ref()
                         .unwrap_cell(),
+                    span: inst.span.clone(),
                     cell_vid: inst.cell,
                 }),
             }
@@ -2763,6 +2764,7 @@ impl<'a> ExecPass<'a> {
                     };
                     if let (Some(refl), Some(angle)) = (refl, angle) {
                         let id = object_id(&mut self.next_id);
+                        let span = self.span(&vref.loc, c.expr.span);
                         let state = self.cell_states.get_mut(&vref.loc.cell).unwrap();
                         let inst = Instance {
                             id,
@@ -2771,6 +2773,7 @@ impl<'a> ExecPass<'a> {
                             cell: *c.state.posargs.first().unwrap(),
                             reflect: refl.unwrap_or_default(),
                             angle: angle.unwrap_or_default(),
+                            span,
                         };
                         state.objects.insert(inst.id, inst.clone().into());
                         for (kwarg, rhs) in c.expr.args.kwargs.iter().zip(c.state.kwargs.iter()) {
@@ -3160,6 +3163,7 @@ impl<'a> ExecPass<'a> {
                                                     y: state.solver.new_var(),
                                                     angle,
                                                     reflect,
+                                                    span: cinst.span.clone(),
                                                 };
                                                 state
                                                     .objects
@@ -3332,6 +3336,7 @@ pub struct Instance {
     pub cell: ValueId,
     pub reflect: bool,
     pub angle: Rotation,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3342,6 +3347,7 @@ pub struct SolvedInstance {
     pub angle: Rotation,
     pub reflect: bool,
     pub cell: CellId,
+    pub span: Span,
     /// The value ID of the cell being instantiated.
     ///
     /// For compiler internal use only.
