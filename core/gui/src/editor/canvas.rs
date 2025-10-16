@@ -33,6 +33,13 @@ pub enum ShapeFill {
     Solid,
 }
 
+const DEFAULT_BORDER_WIDTHS: Edges<Pixels> = Edges {
+    top: Pixels(2.),
+    right: Pixels(2.),
+    bottom: Pixels(2.),
+    left: Pixels(2.),
+};
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Rect {
     pub x0: f32,
@@ -42,6 +49,7 @@ pub struct Rect {
     pub id: Option<Span>,
     /// Empty if not accessible.
     pub object_path: Vec<ObjectId>,
+    pub border_widths: Edges<Pixels>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -85,6 +93,7 @@ impl From<compile::Rect<f64>> for Rect {
             y1: value.y1 as f32,
             id: None,
             object_path: Vec::new(),
+            border_widths: DEFAULT_BORDER_WIDTHS,
         }
     }
 }
@@ -98,6 +107,7 @@ impl From<editor::Rect<(f64, Var)>> for Rect {
             y1: value.y1.0 as f32,
             id: None,
             object_path: Vec::new(),
+            border_widths: DEFAULT_BORDER_WIDTHS,
         }
     }
 }
@@ -113,6 +123,7 @@ impl Rect {
             y1: (p0p.1.max(p1p.1) + ofs.1) as f32,
             id: self.id.clone(),
             object_path: self.object_path.clone(),
+            border_widths: self.border_widths,
         }
     }
 }
@@ -135,9 +146,19 @@ pub(crate) struct DrawRectToolState {
     p0: Option<Point<f32>>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum DimEdge<T> {
+    /// y-axis
+    X0,
+    /// x-axis
+    Y0,
+    /// edge of a rectangle
+    Edge(T),
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct DrawDimToolState {
-    pub(crate) edges: Vec<(String, String, Edge<f32>)>,
+    pub(crate) edges: Vec<DimEdge<(String, String, Edge<f32>)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -208,30 +229,25 @@ impl IntoElement for CanvasElement {
     }
 }
 
-fn get_paint_path(
-    rect_bounds: Bounds<Pixels>,
-    bounds: Bounds<Pixels>,
-    color: Rgba,
-    thickness: Pixels,
-) -> Option<PaintQuad> {
-    let rect_bounds = Bounds::new(
+fn get_paint_path(bounds: Bounds<Pixels>, color: Rgba, thickness: Pixels) -> PaintQuad {
+    let bounds = Bounds::new(
         Point::new(
-            rect_bounds.origin.x - thickness / 2.,
-            rect_bounds.origin.y - thickness / 2.,
+            bounds.origin.x - thickness / 2.,
+            bounds.origin.y - thickness / 2.,
         ),
         Size::new(
-            rect_bounds.size.width + thickness,
-            rect_bounds.size.height + thickness,
+            bounds.size.width + thickness,
+            bounds.size.height + thickness,
         ),
     );
-    intersect(&rect_bounds, &bounds).map(|clipped| PaintQuad {
-        bounds: clipped,
+    PaintQuad {
+        bounds,
         corner_radii: Corners::all(Pixels(0.)),
         background: solid_background(color),
         border_widths: Edges::all(Pixels(0.)),
         border_color: rgba(0).into(),
         border_style: BorderStyle::Solid,
-    })
+    }
 }
 
 fn get_rect_bounds(
@@ -247,46 +263,33 @@ fn get_rect_bounds(
 }
 
 fn get_paint_quad(
-    rect_bounds: Bounds<Pixels>,
     bounds: Bounds<Pixels>,
     fill: ShapeFill,
     color: Rgba,
     border_color: Rgba,
-) -> Option<PaintQuad> {
-    let rect_bounds = Bounds::new(
+    border_widths: Edges<Pixels>,
+) -> PaintQuad {
+    let bounds = Bounds::new(
         Point::new(
-            rect_bounds.origin.x - Pixels(1.),
-            rect_bounds.origin.y - Pixels(1.),
+            bounds.origin.x - border_widths.left / 2.,
+            bounds.origin.y - border_widths.top / 2.,
         ),
         Size::new(
-            rect_bounds.size.width + Pixels(2.),
-            rect_bounds.size.height + Pixels(2.),
+            bounds.size.width + (border_widths.left + border_widths.right) / 2.,
+            bounds.size.height + (border_widths.top + border_widths.bottom) / 2.,
         ),
     );
     let background = match fill {
         ShapeFill::Solid => solid_background(color),
         ShapeFill::Stippling => pattern_slash(color.into(), 1., 9.),
     };
-    if let Some(clipped) = intersect(&rect_bounds, &bounds) {
-        let left_border = f32::clamp((rect_bounds.left().0 + 2.) - bounds.left().0, 0., 2.);
-        let right_border = f32::clamp(bounds.right().0 - (rect_bounds.right().0 - 2.), 0., 2.);
-        let top_border = f32::clamp((rect_bounds.top().0 + 2.) - bounds.top().0, 0., 2.);
-        let bot_border = f32::clamp(bounds.bottom().0 - (rect_bounds.bottom().0 - 2.), 0., 2.);
-        let mut border_widths = Edges::all(Pixels(2.));
-        border_widths.left = Pixels(left_border);
-        border_widths.right = Pixels(right_border);
-        border_widths.top = Pixels(top_border);
-        border_widths.bottom = Pixels(bot_border);
-        Some(PaintQuad {
-            bounds: clipped,
-            corner_radii: Corners::all(Pixels(0.)),
-            background,
-            border_widths,
-            border_color: border_color.into(),
-            border_style: BorderStyle::Solid,
-        })
-    } else {
-        None
+    PaintQuad {
+        bounds,
+        corner_radii: Corners::all(Pixels(0.)),
+        background,
+        border_widths,
+        border_color: border_color.into(),
+        border_style: BorderStyle::Solid,
     }
 }
 
@@ -390,6 +393,7 @@ impl Element for CanvasElement {
                             y1: (p0p.1.max(p1p.1) + ofs.1) as f32,
                             id: Some(scope_info.span.clone()),
                             object_path: Vec::new(),
+                            border_widths: DEFAULT_BORDER_WIDTHS,
                         };
                         if let ToolState::Select(SelectToolState { selected_obj }) =
                             inner.tool.read(cx)
@@ -424,6 +428,13 @@ impl Element for CanvasElement {
                                         y1: (p0p.1.max(p1p.1) + ofs.1) as f32,
                                         id: rect.span.clone(),
                                         object_path,
+                                        border_widths: Edges {
+                                            // TODO: check constrained status and modify widths
+                                            top: Pixels(2.),
+                                            right: Pixels(2.),
+                                            bottom: Pixels(2.),
+                                            left: Pixels(2.),
+                                        },
                                     };
                                     if let ToolState::Select(SelectToolState { selected_obj }) =
                                         inner.tool.read(cx)
@@ -464,6 +475,7 @@ impl Element for CanvasElement {
                                         y1: (p0p.1.max(p1p.1) + new_ofs.1) as f32,
                                         id: Some(inst.span.clone()),
                                         object_path: object_path.clone(),
+                                        border_widths: DEFAULT_BORDER_WIDTHS,
                                     };
                                     if let ToolState::Select(SelectToolState { selected_obj }) =
                                         inner.tool.read(cx)
@@ -511,6 +523,7 @@ impl Element for CanvasElement {
                         x1: p0.x.max(layout_mouse_position.x),
                         y1: p0.y.max(layout_mouse_position.y),
                         id: None,
+                        border_widths: DEFAULT_BORDER_WIDTHS,
                     },
                     layers.layers[layers.selected_layer.as_ref().unwrap()].clone(),
                 ));
@@ -529,38 +542,56 @@ impl Element for CanvasElement {
             .clone()
             .paint(bounds, window, cx, |window, cx| {
                 window.paint_layer(bounds, |window| {
+                    // Draw origin lines.
+                    let origin_coords = self.inner.read(cx).layout_to_px(Point::new(0., 0.));
+                    let y_axis = Edge {
+                        dir: Dir::Vert,
+                        coord: origin_coords.x,
+                        start: bounds.origin.y,
+                        stop: bounds.origin.y + bounds.size.height,
+                    };
+                    let x_axis = Edge {
+                        dir: Dir::Horiz,
+                        coord: origin_coords.y,
+                        start: bounds.origin.x,
+                        stop: bounds.origin.x + bounds.size.width,
+                    };
+                    window.paint_quad(get_paint_path(
+                        y_axis.select_bounds(Pixels(0.)),
+                        rgb(0xffffff),
+                        Pixels(2.),
+                    ));
+                    window.paint_quad(get_paint_path(
+                        x_axis.select_bounds(Pixels(0.)),
+                        rgb(0xffffff),
+                        Pixels(2.),
+                    ));
                     for (r, l) in &rects {
-                        if let Some(quad) = get_paint_quad(
+                        window.paint_quad(get_paint_quad(
                             get_rect_bounds(r, bounds, scale, offset),
-                            bounds,
                             l.fill,
                             l.color,
                             l.border_color,
-                        ) {
-                            window.paint_quad(quad.clone());
-                        }
+                            r.border_widths,
+                        ));
                     }
                     for r in &scope_rects {
-                        if let Some(quad) = get_paint_quad(
+                        window.paint_quad(get_paint_quad(
                             get_rect_bounds(r, bounds, scale, offset),
-                            bounds,
                             ShapeFill::Solid,
                             rgba(0),
                             rgb(0xffffff),
-                        ) {
-                            window.paint_quad(quad);
-                        }
+                            r.border_widths,
+                        ));
                     }
                     for r in &select_rects {
-                        if let Some(quad) = get_paint_quad(
+                        window.paint_quad(get_paint_quad(
                             get_rect_bounds(r, bounds, scale, offset),
-                            bounds,
                             ShapeFill::Solid,
                             rgba(0),
                             rgb(0xffff00),
-                        ) {
-                            window.paint_quad(quad);
-                        }
+                            r.border_widths,
+                        ));
                     }
 
                     let mut draw_dim =
@@ -605,6 +636,7 @@ impl Element for CanvasElement {
                                 x1: x0.max(x1),
                                 y1: y0.max(y1),
                                 id: None,
+                                border_widths: DEFAULT_BORDER_WIDTHS,
                             };
                             let (x0, y0, x1, y1) = if horiz {
                                 (
@@ -638,6 +670,7 @@ impl Element for CanvasElement {
                                 x1: x0.max(x1),
                                 y1: y0.max(y1),
                                 id: None,
+                                border_widths: DEFAULT_BORDER_WIDTHS,
                             };
                             let (x0, y0, x1, y1) = if horiz {
                                 (p, coord, n, coord)
@@ -651,16 +684,14 @@ impl Element for CanvasElement {
                                 x1: x0.max(x1),
                                 y1: y0.max(y1),
                                 id: None,
+                                border_widths: DEFAULT_BORDER_WIDTHS,
                             };
                             for r in &[start_line, stop_line, dim_line] {
-                                if let Some(quad) = get_paint_path(
+                                window.paint_quad(get_paint_path(
                                     get_rect_bounds(r, bounds, scale, offset),
-                                    bounds,
                                     color,
                                     Pixels(2.),
-                                ) {
-                                    window.paint_quad(quad);
-                                }
+                                ));
                             }
 
                             let run_len = value.len();
@@ -715,67 +746,95 @@ impl Element for CanvasElement {
                     if let ToolState::DrawDim(DrawDimToolState { edges }) = &tool {
                         // draw dimension lines
                         if edges.len() == 1 {
-                            let edge = &edges[0].2;
-                            let coord = match edge.dir {
-                                Dir::Horiz => layout_mouse_position.y,
-                                Dir::Vert => layout_mouse_position.x,
-                            };
-                            draw_dim(
-                                edge.start,
-                                edge.stop,
-                                coord,
-                                edge.coord,
-                                edge.coord,
-                                edge.dir == Dir::Horiz,
-                                format!("{:.3}", (edge.stop - edge.start).abs()),
-                                rgb(0xff0000),
-                                None,
-                            );
+                            if let DimEdge::Edge((_, _, edge)) = &edges[0] {
+                                let coord = match edge.dir {
+                                    Dir::Horiz => layout_mouse_position.y,
+                                    Dir::Vert => layout_mouse_position.x,
+                                };
+                                draw_dim(
+                                    edge.start,
+                                    edge.stop,
+                                    coord,
+                                    edge.coord,
+                                    edge.coord,
+                                    edge.dir == Dir::Horiz,
+                                    format!("{:.3}", (edge.stop - edge.start).abs()),
+                                    rgb(0xff0000),
+                                    None,
+                                );
+                            }
                         } else if edges.len() == 2 {
-                            let edge0 = &edges[0].2;
-                            let edge1 = &edges[1].2;
-                            let coord = match edge0.dir {
-                                Dir::Horiz => layout_mouse_position.x,
-                                Dir::Vert => layout_mouse_position.y,
-                            };
-                            draw_dim(
-                                edge0.coord,
-                                edge1.coord,
-                                coord,
-                                (edge0.start + edge0.stop) / 2.,
-                                (edge1.start + edge1.stop) / 2.,
-                                edge0.dir == Dir::Vert,
-                                format!("{:.3}", (edge1.coord - edge0.coord).abs()),
-                                rgb(0xff0000),
-                                None,
-                            );
+                            let (p, n, coord, pstop, nstop, horiz, value) =
+                                match (&edges[0], &edges[1]) {
+                                    (
+                                        DimEdge::Edge((_, _, edge0)),
+                                        DimEdge::Edge((_, _, edge1)),
+                                    ) => {
+                                        let coord = match edge0.dir {
+                                            Dir::Horiz => layout_mouse_position.x,
+                                            Dir::Vert => layout_mouse_position.y,
+                                        };
+                                        (
+                                            edge0.coord,
+                                            edge1.coord,
+                                            coord,
+                                            (edge0.start + edge0.stop) / 2.,
+                                            (edge1.start + edge1.stop) / 2.,
+                                            edge0.dir == Dir::Vert,
+                                            format!("{:.3}", (edge1.coord - edge0.coord).abs()),
+                                        )
+                                    }
+                                    (DimEdge::X0 | DimEdge::Y0, DimEdge::Edge((_, _, edge)))
+                                    | (DimEdge::Edge((_, _, edge)), DimEdge::X0 | DimEdge::Y0) => {
+                                        let coord = match edge.dir {
+                                            Dir::Horiz => layout_mouse_position.x,
+                                            Dir::Vert => layout_mouse_position.y,
+                                        };
+                                        (
+                                            0.,
+                                            edge.coord,
+                                            coord,
+                                            coord,
+                                            (edge.start + edge.stop) / 2.,
+                                            edge.dir == Dir::Vert,
+                                            format!("{:3}", edge.coord.abs()),
+                                        )
+                                    }
+                                    _ => unreachable!(),
+                                };
+                            draw_dim(p, n, coord, pstop, nstop, horiz, value, rgb(0xff0000), None);
                         }
                         // highlight selected edges
-                        for (_, _, edge) in edges {
-                            let (x0, y0, x1, y1) = match edge.dir {
-                                Dir::Horiz => (edge.start, edge.coord, edge.stop, edge.coord),
-                                Dir::Vert => (edge.coord, edge.start, edge.coord, edge.stop),
+                        for edge in edges {
+                            let bounds = match edge {
+                                DimEdge::Edge((_, _, edge)) => {
+                                    let (x0, y0, x1, y1) = match edge.dir {
+                                        Dir::Horiz => {
+                                            (edge.start, edge.coord, edge.stop, edge.coord)
+                                        }
+                                        Dir::Vert => {
+                                            (edge.coord, edge.start, edge.coord, edge.stop)
+                                        }
+                                    };
+                                    get_rect_bounds(
+                                        &Rect {
+                                            object_path: Vec::new(),
+                                            x0,
+                                            y0,
+                                            x1,
+                                            y1,
+                                            id: None,
+                                            border_widths: DEFAULT_BORDER_WIDTHS,
+                                        },
+                                        bounds,
+                                        scale,
+                                        offset,
+                                    )
+                                }
+                                DimEdge::X0 => y_axis.select_bounds(Pixels(0.)),
+                                DimEdge::Y0 => x_axis.select_bounds(Pixels(0.)),
                             };
-                            if let Some(quad) = get_paint_path(
-                                get_rect_bounds(
-                                    &Rect {
-                                        object_path: Vec::new(),
-                                        x0,
-                                        y0,
-                                        x1,
-                                        y1,
-                                        id: None,
-                                    },
-                                    bounds,
-                                    scale,
-                                    offset,
-                                ),
-                                bounds,
-                                rgb(0xffff00),
-                                Pixels(2.),
-                            ) {
-                                window.paint_quad(quad);
-                            }
+                            window.paint_quad(get_paint_path(bounds, rgb(0xffff00), Pixels(2.)));
                         }
                     }
                     let inner = self.inner.read(cx);
@@ -792,6 +851,18 @@ impl Element for CanvasElement {
                                 let scale = inner.scale;
                                 let offset = inner.offset;
                                 let mut selected = None;
+                                if x_axis
+                                    .select_bounds(Pixels(4.))
+                                    .contains(&inner.mouse_position)
+                                {
+                                    selected = Some(DimEdge::Y0);
+                                }
+                                if y_axis
+                                    .select_bounds(Pixels(4.))
+                                    .contains(&inner.mouse_position)
+                                {
+                                    selected = Some(DimEdge::X0);
+                                }
                                 for (rect, r) in rects.map(|r| {
                                     (
                                         r,
@@ -872,64 +943,85 @@ impl Element for CanvasElement {
                                         if bounds.contains(&inner.mouse_position)
                                             && rect.id.is_some()
                                         {
-                                            selected = Some((rect, name, edge_layout));
+                                            selected =
+                                                Some(DimEdge::Edge((rect, name, edge_layout)));
+                                            break;
                                         }
                                     }
                                 }
-                                if let Some((r, _, edge)) = selected {
-                                    let path = {
-                                        let cell = inner.state.read(cx).solved_cell.read(cx);
-                                        if let Some(cell) = cell
-                                            && let selected_scope_addr =
-                                                cell.state[&cell.selected_scope].address
-                                            && let (true, path) = find_obj_path(
-                                                &r.object_path,
-                                                cell,
-                                                selected_scope_addr,
-                                            )
-                                        {
-                                            let path = path.join(".");
-                                            Some(path)
-                                        } else {
-                                            None
-                                        }
-                                    };
-                                    if path.is_some()
-                                        && dim_tool
-                                            .edges
-                                            .first()
-                                            .map(|(_, _, edge0)| edge0.dir == edge.dir)
-                                            .unwrap_or(true)
-                                    {
-                                        let (x0, y0, x1, y1) = match edge.dir {
-                                            Dir::Horiz => {
-                                                (edge.start, edge.coord, edge.stop, edge.coord)
-                                            }
-                                            Dir::Vert => {
-                                                (edge.coord, edge.start, edge.coord, edge.stop)
+                                match selected {
+                                    Some(DimEdge::Edge((r, _, edge))) => {
+                                        let path = {
+                                            let cell = inner.state.read(cx).solved_cell.read(cx);
+                                            if let Some(cell) = cell
+                                                && let selected_scope_addr =
+                                                    cell.state[&cell.selected_scope].address
+                                                && let (true, path) = find_obj_path(
+                                                    &r.object_path,
+                                                    cell,
+                                                    selected_scope_addr,
+                                                )
+                                            {
+                                                let path = path.join(".");
+                                                Some(path)
+                                            } else {
+                                                None
                                             }
                                         };
-                                        if let Some(quad) = get_paint_path(
-                                            get_rect_bounds(
-                                                &Rect {
-                                                    object_path: Vec::new(),
-                                                    x0,
-                                                    y0,
-                                                    x1,
-                                                    y1,
-                                                    id: None,
-                                                },
-                                                bounds,
-                                                scale,
-                                                offset,
-                                            ),
-                                            bounds,
-                                            rgb(0xffff00),
-                                            Pixels(2.),
-                                        ) {
-                                            window.paint_quad(quad);
+                                        if path.is_some()
+                                            && dim_tool
+                                                .edges
+                                                .first()
+                                                .map(|old_edge| match old_edge {
+                                                    DimEdge::X0 => Dir::Vert,
+                                                    DimEdge::Y0 => Dir::Horiz,
+                                                    DimEdge::Edge((_, _, edge)) => edge.dir,
+                                                } == edge.dir)
+                                                .unwrap_or(true)
+                                        {
+                                            let (x0, y0, x1, y1) = match edge.dir {
+                                                Dir::Horiz => {
+                                                    (edge.start, edge.coord, edge.stop, edge.coord)
+                                                }
+                                                Dir::Vert => {
+                                                    (edge.coord, edge.start, edge.coord, edge.stop)
+                                                }
+                                            };
+                                            window.paint_quad(get_paint_path(
+                                                get_rect_bounds(
+                                                    &Rect {
+                                                        object_path: Vec::new(),
+                                                        x0,
+                                                        y0,
+                                                        x1,
+                                                        y1,
+                                                        id: None,
+                                                        border_widths: DEFAULT_BORDER_WIDTHS,
+                                                    },
+                                                    bounds,
+                                                    scale,
+                                                    offset,
+                                                ),
+                                                rgb(0xffff00),
+                                                Pixels(2.),
+                                            ));
                                         }
                                     }
+                                    Some(DimEdge::X0) => {
+                                        window.paint_quad(get_paint_path(
+                                            y_axis.select_bounds(Pixels(0.)),
+                                            rgb(0xffff00),
+                                            Pixels(2.),
+                                        ));
+                                    }
+                                    Some(DimEdge::Y0) => {
+                                        window.paint_quad(get_paint_path(
+                                            x_axis.select_bounds(Pixels(0.)),
+                                            rgb(0xffff00),
+                                            Pixels(2.),
+                                        ));
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -965,15 +1057,13 @@ impl Element for CanvasElement {
                                 )
                             {
                                 if hitbox.contains(&inner.mouse_position) {
-                                    if let Some(quad) = get_paint_quad(
+                                    window.paint_quad(get_paint_quad(
                                         hitbox,
-                                        bounds,
                                         ShapeFill::Solid,
                                         rgba(0),
                                         rgb(0xffff00),
-                                    ) {
-                                        window.paint_quad(quad);
-                                    }
+                                        Edges::all(Pixels(2.)),
+                                    ));
                                     break;
                                 }
                             }
@@ -1100,6 +1190,19 @@ impl LayoutCanvas {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let origin_coords = self.layout_to_px(Point::new(0., 0.));
+        let y_axis = Edge {
+            dir: Dir::Vert,
+            coord: origin_coords.x,
+            start: self.screen_bounds.origin.y,
+            stop: self.screen_bounds.origin.y + self.screen_bounds.size.height,
+        };
+        let x_axis = Edge {
+            dir: Dir::Horiz,
+            coord: origin_coords.y,
+            start: self.screen_bounds.origin.x,
+            stop: self.screen_bounds.origin.x + self.screen_bounds.size.width,
+        };
         let layout_mouse_position = self.px_to_layout(event.position);
         self.tool.update(cx, |tool, cx| {
             match tool {
@@ -1174,6 +1277,12 @@ impl LayoutCanvas {
                         let scale = self.scale;
                         let offset = self.offset;
                         let mut selected = None;
+                        if x_axis.select_bounds(Pixels(4.)).contains(&event.position) {
+                            selected = Some(DimEdge::Y0);
+                        }
+                        if y_axis.select_bounds(Pixels(4.)).contains(&event.position) {
+                            selected = Some(DimEdge::X0);
+                        }
                         for (rect, r) in rects.map(|r| {
                             (
                                 r,
@@ -1252,40 +1361,61 @@ impl LayoutCanvas {
                             ] {
                                 let bounds = edge_px.select_bounds(Pixels(4.));
                                 if bounds.contains(&event.position) && rect.id.is_some() {
-                                    selected = Some((rect, name, edge_layout));
+                                    selected = Some(DimEdge::Edge((rect, name, edge_layout)));
+                                    break;
                                 }
                             }
                         }
                         let enter_entry_mode = !dim_tool.edges.is_empty();
-                        if let Some((r, name, edge)) = selected {
-                            let path = {
-                                let cell = self.state.read(cx).solved_cell.read(cx);
-                                if let Some(cell) = cell
-                                    && let selected_scope_addr =
-                                        cell.state[&cell.selected_scope].address
-                                    && let (true, path) =
-                                        find_obj_path(&r.object_path, cell, selected_scope_addr)
+                        match selected {
+                            Some(DimEdge::Edge((r, name, edge))) => {
+                                let path = {
+                                    let cell = self.state.read(cx).solved_cell.read(cx);
+                                    if let Some(cell) = cell
+                                        && let selected_scope_addr =
+                                            cell.state[&cell.selected_scope].address
+                                        && let (true, path) =
+                                            find_obj_path(&r.object_path, cell, selected_scope_addr)
+                                    {
+                                        let path = path.join(".");
+                                        Some(path)
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let Some(path) = path
+                                    && dim_tool
+                                        .edges
+                                        .first()
+                                        .map(|old_edge| {
+                                            let old_dir = match old_edge {
+                                                DimEdge::X0 => Dir::Vert,
+                                                DimEdge::Y0 => Dir::Horiz,
+                                                DimEdge::Edge((_, _, edge)) => edge.dir,
+                                            };
+                                            old_dir == edge.dir
+                                        })
+                                        .unwrap_or(true)
                                 {
-                                    let path = path.join(".");
-                                    Some(path)
+                                    dim_tool.edges.push(DimEdge::Edge((
+                                        path,
+                                        name.to_string(),
+                                        edge,
+                                    )));
+                                    false
                                 } else {
-                                    None
+                                    enter_entry_mode
                                 }
-                            };
-                            if let Some(path) = path
-                                && dim_tool
-                                    .edges
-                                    .first()
-                                    .map(|(_, _, edge0)| edge0.dir == edge.dir)
-                                    .unwrap_or(true)
-                            {
-                                dim_tool.edges.push((path, name.to_string(), edge));
-                                false
-                            } else {
-                                enter_entry_mode
                             }
-                        } else {
-                            enter_entry_mode
+                            Some(DimEdge::X0) => {
+                                dim_tool.edges.push(DimEdge::X0);
+                                false
+                            }
+                            Some(DimEdge::Y0) => {
+                                dim_tool.edges.push(DimEdge::Y0);
+                                false
+                            }
+                            _ => enter_entry_mode,
                         }
                     } else {
                         true
@@ -1296,8 +1426,10 @@ impl LayoutCanvas {
                     if enter_entry_mode && let Some(cell) = state.solved_cell.read(cx) {
                         let selected_scope_addr = cell.state[&cell.selected_scope].address;
 
-                        let span = if dim_tool.edges.len() == 1 {
-                            let (left, right, coord, horiz) = match dim_tool.edges[0].2.dir {
+                        let span = if dim_tool.edges.len() == 1
+                            && let DimEdge::Edge(edge) = &dim_tool.edges[0]
+                        {
+                            let (left, right, coord, horiz) = match edge.2.dir {
                                 Dir::Horiz => ("x0", "x1", layout_mouse_position.y, "true"),
                                 Dir::Vert => ("y0", "y1", layout_mouse_position.x, "false"),
                             };
@@ -1308,104 +1440,130 @@ impl LayoutCanvas {
                                     .span
                                     .clone(),
                                 DimensionParams {
-                                    p: format!("{}.{}", dim_tool.edges[0].0, right),
-                                    n: format!("{}.{}", dim_tool.edges[0].0, left),
-                                    value: format!(
-                                        "{:?}",
-                                        dim_tool.edges[0].2.stop - dim_tool.edges[0].2.start
-                                    ),
-                                    coord: if coord > dim_tool.edges[0].2.coord {
-                                        format!(
-                                            "{}.{} + {}",
-                                            dim_tool.edges[0].0,
-                                            dim_tool.edges[0].1,
-                                            coord - dim_tool.edges[0].2.coord
-                                        )
+                                    p: format!("{}.{}", edge.0, right),
+                                    n: format!("{}.{}", edge.0, left),
+                                    value: format!("{:?}", edge.2.stop - edge.2.start),
+                                    coord: if coord > edge.2.coord {
+                                        format!("{}.{} + {}", edge.0, edge.1, coord - edge.2.coord)
                                     } else {
-                                        format!(
-                                            "{}.{} - {}",
-                                            dim_tool.edges[0].0,
-                                            dim_tool.edges[0].1,
-                                            dim_tool.edges[0].2.coord - coord
-                                        )
+                                        format!("{}.{} - {}", edge.0, edge.1, edge.2.coord - coord)
                                     },
-                                    pstop: format!(
-                                        "{}.{}",
-                                        dim_tool.edges[0].0, dim_tool.edges[0].1
-                                    ),
-                                    nstop: format!(
-                                        "{}.{}",
-                                        dim_tool.edges[0].0, dim_tool.edges[0].1
-                                    ),
+                                    pstop: format!("{}.{}", edge.0, edge.1),
+                                    nstop: format!("{}.{}", edge.0, edge.1),
                                     horiz: horiz.to_string(),
                                 },
                             )
                         } else if dim_tool.edges.len() == 2 {
-                            let (left, right) =
-                                if dim_tool.edges[0].2.coord < dim_tool.edges[1].2.coord {
-                                    (0, 1)
-                                } else {
-                                    (1, 0)
-                                };
-                            let (start, stop, coord, horiz) = match dim_tool.edges[0].2.dir {
-                                Dir::Vert => ("y0", "y1", layout_mouse_position.y, "true"),
-                                Dir::Horiz => ("x0", "x1", layout_mouse_position.x, "false"),
-                            };
+                            match (&dim_tool.edges[0], &dim_tool.edges[1]) {
+                                (DimEdge::Edge(edge0), DimEdge::Edge(edge1)) => {
+                                    let (left, right) = if edge0.2.coord < edge1.2.coord {
+                                        (edge0, edge1)
+                                    } else {
+                                        (edge1, edge0)
+                                    };
+                                    let (start, stop, coord, horiz) = match left.2.dir {
+                                        Dir::Vert => ("y0", "y1", layout_mouse_position.y, "true"),
+                                        Dir::Horiz => {
+                                            ("x0", "x1", layout_mouse_position.x, "false")
+                                        }
+                                    };
 
-                            let intended_coord = (dim_tool.edges[right].2.start
-                                + dim_tool.edges[right].2.stop
-                                + dim_tool.edges[left].2.start
-                                + dim_tool.edges[left].2.stop)
-                                / 4.;
-                            let coord_offset = if coord > intended_coord {
-                                format!("+ {}", coord - intended_coord)
-                            } else {
-                                format!("- {}", intended_coord - coord)
-                            };
-                            state.lsp_client.draw_dimension(
-                                cell.output.cells[&selected_scope_addr.cell].scopes
-                                    [&selected_scope_addr.scope]
-                                    .span
-                                    .clone(),
-                                DimensionParams {
-                                    p: format!(
-                                        "{}.{}",
-                                        dim_tool.edges[right].0, dim_tool.edges[right].1,
-                                    ),
-                                    n: format!(
-                                        "{}.{}",
-                                        dim_tool.edges[left].0, dim_tool.edges[left].1
-                                    ),
-                                    value: format!(
-                                        "{:?}",
-                                        dim_tool.edges[right].2.coord
-                                            - dim_tool.edges[left].2.coord
-                                    ),
-                                    coord: format!(
-                                        "({}.{} + {}.{} + {}.{} + {}.{})/4. {coord_offset}",
-                                        dim_tool.edges[right].0,
-                                        start,
-                                        dim_tool.edges[right].0,
-                                        stop,
-                                        dim_tool.edges[left].0,
-                                        start,
-                                        dim_tool.edges[left].0,
-                                        stop,
-                                    ),
-                                    pstop: format!(
+                                    let intended_coord =
+                                        (right.2.start + right.2.stop + left.2.start + left.2.stop)
+                                            / 4.;
+                                    let coord_offset = if coord > intended_coord {
+                                        format!("+ {}", coord - intended_coord)
+                                    } else {
+                                        format!("- {}", intended_coord - coord)
+                                    };
+                                    state.lsp_client.draw_dimension(
+                                        cell.output.cells[&selected_scope_addr.cell].scopes
+                                            [&selected_scope_addr.scope]
+                                            .span
+                                            .clone(),
+                                        DimensionParams {
+                                            p: format!("{}.{}", right.0, right.1,),
+                                            n: format!("{}.{}", left.0, left.1),
+                                            value: format!("{:?}", right.2.coord - left.2.coord),
+                                            coord: format!(
+                                                "({}.{} + {}.{} + {}.{} + {}.{})/4. {coord_offset}",
+                                                right.0,
+                                                start,
+                                                right.0,
+                                                stop,
+                                                left.0,
+                                                start,
+                                                left.0,
+                                                stop,
+                                            ),
+                                            pstop: format!(
+                                                "({}.{} + {}.{}) / 2.",
+                                                right.0, start, right.0, stop,
+                                            ),
+                                            nstop: format!(
+                                                "({}.{} + {}.{}) / 2.",
+                                                left.0, start, left.0, stop,
+                                            ),
+                                            horiz: horiz.to_string(),
+                                        },
+                                    )
+                                }
+                                (DimEdge::X0 | DimEdge::Y0, DimEdge::Edge(edge))
+                                | (DimEdge::Edge(edge), DimEdge::X0 | DimEdge::Y0) => {
+                                    let (start, stop, coord, horiz) = match edge.2.dir {
+                                        Dir::Vert => ("y0", "y1", layout_mouse_position.y, "true"),
+                                        Dir::Horiz => {
+                                            ("x0", "x1", layout_mouse_position.x, "false")
+                                        }
+                                    };
+
+                                    let intended_coord = (edge.2.start + edge.2.stop) / 2.;
+                                    let coord_offset = if coord > intended_coord {
+                                        format!("+ {}", coord - intended_coord)
+                                    } else {
+                                        format!("- {}", intended_coord - coord)
+                                    };
+
+                                    let pnstop = format!(
                                         "({}.{} + {}.{}) / 2.",
-                                        dim_tool.edges[right].0,
-                                        start,
-                                        dim_tool.edges[right].0,
-                                        stop,
-                                    ),
-                                    nstop: format!(
-                                        "({}.{} + {}.{}) / 2.",
-                                        dim_tool.edges[left].0, start, dim_tool.edges[left].0, stop,
-                                    ),
-                                    horiz: horiz.to_string(),
-                                },
-                            )
+                                        edge.0, start, edge.0, stop,
+                                    );
+                                    let coord = format!("{pnstop} {coord_offset}");
+                                    let (p, n, value, pstop, nstop) = if edge.2.coord < 0. {
+                                        (
+                                            "0.".to_string(),
+                                            format!("{}.{}", edge.0, edge.1),
+                                            format!("{}", -edge.2.coord),
+                                            coord.clone(),
+                                            pnstop,
+                                        )
+                                    } else {
+                                        (
+                                            format!("{}.{}", edge.0, edge.1),
+                                            "0.".to_string(),
+                                            format!("{}", edge.2.coord),
+                                            pnstop,
+                                            coord.clone(),
+                                        )
+                                    };
+                                    state.lsp_client.draw_dimension(
+                                        cell.output.cells[&selected_scope_addr.cell].scopes
+                                            [&selected_scope_addr.scope]
+                                            .span
+                                            .clone(),
+                                        DimensionParams {
+                                            p,
+                                            n,
+                                            value,
+                                            coord,
+                                            pstop,
+                                            nstop,
+                                            horiz: horiz.to_string(),
+                                        },
+                                    )
+                                }
+                                _ => unreachable!(),
+                            }
                         } else {
                             None
                         };
