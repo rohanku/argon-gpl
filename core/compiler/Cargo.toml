@@ -6,11 +6,14 @@ edition = "2024"
 [dependencies]
 derive-where = { version = "1", features = ["serde"] }
 nalgebra = "0.34"
+nalgebra-sparse = "0.11"
 klayout-lyp = "0.1.1"
 faer = {version = "0.23.2", features = ["rayon"]}
 rayon = "1.10"
 faer-ext = { version = "0.7.1", features = ["nalgebra"] }
 blas-src = { version = "0.10", features = ["openblas"] }
+#suitesparse_sys = { version = "0.1", features = ["spqr", "cholmod", "build_vendor"] }
+libc = "0.2"
 faer-core = "0.17.1"
 faer-sparse = "0.17"
 
@@ -35,6 +38,8 @@ gds21 = "0.2"
 
 [build-dependencies]
 lrpar = { version = "0.13", features = ["serde"] }
+#trying sparse
+bindgen = "0.72.1"
 
 cfgrammar = { workspace = true }
 lrlex = { workspace = true }

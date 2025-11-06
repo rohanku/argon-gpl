@@ -1,4 +1,4 @@
-use std::error;
+use std::{error, mem::zeroed};
 
 use approx::relative_eq;
 use faer::{
@@ -21,6 +21,7 @@ const INV_ROUND_STEP: f64 = 1. / ROUND_STEP;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
 pub struct Var(u64);
+use crate::spqr_wrapper::SpqrFactorization;
 
 #[derive(Clone, Default)]
 pub struct Solver {
@@ -95,13 +96,86 @@ impl Solver {
     }
 
     pub fn solve(&mut self) {
-        let method: u64 = 1;
+        let method: u64 = 2;
         if method == 0 {
             self.solve_svd();
         } else if method == 1 {
             self.solve_qr();
+        } else if method == 2 {
+            self.solve_qr_sparse();
         }
     }
+
+    pub fn solve_qr_sparse(&mut self) {
+        use nalgebra::{DMatrix, DVector};
+        use nalgebra::{Dyn, Matrix, VecStorage};
+        use rayon::prelude::*;
+
+        let tolerance = 0.03;
+        let n_vars = self.next_var as usize;
+        if n_vars == 0 || self.constraints.is_empty() {
+            return;
+        }
+
+        let temp_a: Vec<f64> = self
+            .constraints
+            .par_iter()
+            .flat_map(|c| c.expr.coeff_vec(n_vars))
+            .collect();
+
+        let a: DMatrix<f64> = DMatrix::from_row_iterator(self.constraints.len(), n_vars, temp_a);
+        let m = a.nrows();
+        let n = a.ncols();
+
+        let temp_b: Vec<f64> = self
+            .constraints
+            .par_iter()
+            .map(|c| -c.expr.constant)
+            .collect();
+
+        let b = DVector::from_iterator(self.constraints.len(), temp_b);
+
+        let temp_a_constraind_ids: Vec<u64> = self.constraints.par_iter().map(|c| c.id).collect();
+        let a_constraint_ids = Vec::from_iter(temp_a_constraind_ids);
+
+        let qr = SpqrFactorization::new(&a).unwrap();
+
+        let rank = qr.rank();
+        let Q = qr.q_matrix();
+        let R = qr.r_matrix();
+        let E = qr.permutation();
+
+        let x = if m >= n {
+            qr.solve(&b).unwrap()
+        } else {
+            let at = a.transpose();
+            let aat = &a * &at;
+            let qr_normal = SpqrFactorization::new(&aat).unwrap();
+            let y = qr_normal.solve(&b).unwrap();
+            &at * &y
+        };
+
+        let residual = &b - &a * &x;
+
+        let tolerance = 1e-10;
+
+        for i in 0..residual.nrows() {
+            let r = residual[(i, 0)];
+            if r.abs() > tolerance {
+                self.inconsistent_constraints.insert(a_constraint_ids[i]);
+            }
+        }
+        let forward = E.unwrap();
+
+        let determ_var_idx: Vec<usize> = forward[0..rank].to_vec();
+        let free_var_idx: Vec<usize> = forward[rank..n].to_vec();
+
+        for (i, &r) in determ_var_idx.iter().enumerate() {
+            let actual_val = x[(r, 0)];
+            self.solved_vars.insert(Var(r as u64), actual_val);
+        }
+    }
+
     pub fn solve_qr(&mut self) {
         use faer::linalg::triangular_solve::solve_upper_triangular_in_place_with_conj;
         use faer::mat;
@@ -141,6 +215,9 @@ impl Solver {
 
         let m = A.nrows();
         let n = A.ncols();
+
+        print!("mmmmmmm {:?}", m);
+        print!("nnnnnn {:?}", n);
 
         use faer::linalg::solvers::ColPivQr;
         //use faer::sparse::linalg::solvers::Qr;
