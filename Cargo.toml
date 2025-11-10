@@ -30,6 +30,3 @@ enumify = { version = "0.2", registry = "substrate" }
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
