@@ -1077,6 +1077,7 @@ dependencies = [
  "lrlex",
  "lrpar",
  "nalgebra",
+ "nalgebra-sparse",
  "rayon",
  "regex",
  "rgb",
@@ -4073,6 +4074,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.109",
+]
+
+[[package]]
+name = "nalgebra-sparse"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df054d7815152d4e66955fc59a1f97f4036e5103134a381b6b54ec55babfa6b7"
+dependencies = [
+ "nalgebra",
+ "num-traits",
 ]
 
 [[package]]

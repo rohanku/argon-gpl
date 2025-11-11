@@ -13,10 +13,12 @@ mod ffi {
 
 use nalgebra::DMatrix;
 use nalgebra::DVector;
-use nalgebra::SimdPartialOrd;
 use rayon::prelude::*;
 use std::ptr;
 use std::ptr::NonNull;
+
+use crate::spqr_wrapper::ffi::CHOLMOD_REAL;
+use crate::spqr_wrapper::ffi::cholmod_l_allocate_triplet;
 
 pub struct SpqrFactorization {
     q: *mut ffi::cholmod_sparse,
@@ -33,7 +35,7 @@ pub struct unsafe_pointer_for_threads<T> {
 }
 impl<T> unsafe_pointer_for_threads<T> {
     fn as_ptr(&self) -> *mut T {
-        return self.pointer.as_ptr();
+        self.pointer.as_ptr()
     }
 }
 unsafe impl<T> Send for unsafe_pointer_for_threads<T> {}
@@ -88,6 +90,105 @@ impl SpqrFactorization {
         }
     }
 
+    pub fn new_from_triplets(
+        triplet: &Vec<(usize, usize, f64)>,
+        m: usize,
+        n: usize,
+    ) -> Result<Self, String> {
+        unsafe {
+            let mut cc = Box::new(std::mem::zeroed::<ffi::cholmod_common>());
+            ffi::cholmod_l_start(cc.as_mut());
+            cc.nthreads_max = 0;
+            let cholmod_matrix =
+                Self::triplet_to_cholmod_sparse(triplet, m, n, cc.as_mut()).unwrap();
+
+            let mut q_s: *mut ffi::cholmod_sparse = ptr::null_mut();
+            let mut r_s: *mut ffi::cholmod_sparse = ptr::null_mut();
+            let mut e_p: *mut i64 = ptr::null_mut();
+
+            let econ: i64 = 0;
+
+            let rank = ffi::SuiteSparseQR_C_QR(
+                ffi::SPQR_ORDERING_DEFAULT as i32,
+                ffi::SPQR_DEFAULT_TOL as f64,
+                econ,
+                cholmod_matrix,
+                &mut q_s,
+                &mut r_s,
+                &mut e_p,
+                cc.as_mut(),
+            );
+
+            ffi::cholmod_l_free_sparse(&mut (cholmod_matrix as *mut _), cc.as_mut());
+
+            if rank == -1 {
+                //failed
+                ffi::cholmod_l_finish(cc.as_mut());
+                return Err("failed".to_string());
+            }
+
+            Ok(SpqrFactorization {
+                q: q_s,
+                r: r_s,
+                e: e_p,
+                rank: rank as usize,
+                cc: Box::into_raw(cc),
+                m,
+                n,
+            })
+        }
+    }
+
+    ///triplet to cholmod sparse
+    pub unsafe fn triplet_to_cholmod_sparse(
+        triplet: &Vec<(usize, usize, f64)>,
+        m: usize,
+        n: usize,
+        cc: *mut ffi::cholmod_common,
+    ) -> Result<*mut ffi::cholmod_sparse, String> {
+        unsafe {
+            let nnz = triplet.len();
+
+            let cholmod_triplet =
+                ffi::cholmod_l_allocate_triplet(m, n, nnz, 0, ffi::CHOLMOD_REAL as i32, cc);
+
+            let cholmod_triplet_ref = &mut *cholmod_triplet;
+
+            let j_pointer = cholmod_triplet_ref.j as *mut i64;
+            let i_pointer = cholmod_triplet_ref.i as *mut i64;
+            let x_pointer = cholmod_triplet_ref.x as *mut f64;
+
+            let j_pointer_wrapper = unsafe_pointer_for_threads {
+                pointer: NonNull::new(j_pointer).unwrap(),
+            };
+            let i_pointer_wrapper = unsafe_pointer_for_threads {
+                pointer: NonNull::new(i_pointer).unwrap(),
+            };
+            let x_pointer_wrapper = unsafe_pointer_for_threads {
+                pointer: NonNull::new(x_pointer).unwrap(),
+            };
+
+            triplet
+                .par_iter()
+                .enumerate()
+                .for_each(|(idx, (i, j, val))| {
+                    let acc_i_pointer = i_pointer_wrapper.as_ptr();
+                    let acc_j_pointer = j_pointer_wrapper.as_ptr();
+                    let acc_x_pointer = x_pointer_wrapper.as_ptr();
+                    *acc_i_pointer.add(idx) = *i as i64;
+                    *acc_j_pointer.add(idx) = *j as i64;
+                    *acc_x_pointer.add(idx) = *val;
+                });
+            cholmod_triplet_ref.nnz = nnz;
+
+            let a_sparse = ffi::cholmod_l_triplet_to_sparse(cholmod_triplet, nnz, cc);
+
+            ffi::cholmod_l_free_triplet(&mut (cholmod_triplet as *mut _), cc);
+
+            Ok(a_sparse)
+        }
+    }
+
     pub fn r_matrix(&self) -> Result<DMatrix<f64>, String> {
         unsafe { self.cholmod_sparse_to_dense(self.r) }
     }
@@ -122,53 +223,53 @@ impl SpqrFactorization {
         matrix: &DMatrix<f64>,
         cc: *mut ffi::cholmod_common,
     ) -> Result<*mut ffi::cholmod_sparse, String> {
-        let m = matrix.nrows();
-        let n = matrix.ncols();
+        unsafe {
+            let m = matrix.nrows();
+            let n = matrix.ncols();
 
-        let mut nnz = matrix
-            .par_column_iter()
-            .map(|col| col.into_iter().filter(|x| **x != 0.0).count())
-            .sum();
+            let mut nnz = matrix
+                .par_column_iter()
+                .map(|col| col.into_iter().filter(|x| **x != 0.0).count())
+                .sum();
 
-        if nnz < 1 {
-            nnz = 1;
-        }
+            if nnz < 1 {
+                nnz = 1;
+            }
 
-        let sparse =
-            ffi::cholmod_l_allocate_sparse(m, n, nnz, 1, 1, 0, ffi::CHOLMOD_REAL as i32, cc);
+            let sparse =
+                ffi::cholmod_l_allocate_sparse(m, n, nnz, 1, 1, 0, ffi::CHOLMOD_REAL as i32, cc);
 
-        let sparse_ref = &mut *sparse;
+            let sparse_ref = &mut *sparse;
 
-        let col_ptr = sparse_ref.p as *mut i64;
-        let row_ind = sparse_ref.i as *mut i64;
-        let values = sparse_ref.x as *mut f64;
+            let col_ptr = sparse_ref.p as *mut i64;
+            let row_ind = sparse_ref.i as *mut i64;
+            let values = sparse_ref.x as *mut f64;
 
-        let mut idx = 0;
-        for j in 0..n {
-            *col_ptr.add(j) = idx as i64;
-            for i in 0..m {
-                let val = matrix[(i, j)];
-                if val != 0.0 {
-                    if idx < nnz {
+            let mut idx = 0;
+            for j in 0..n {
+                *col_ptr.add(j) = idx as i64;
+                for i in 0..m {
+                    let val = matrix[(i, j)];
+                    if val != 0.0 && idx < nnz {
                         *row_ind.add(idx) = i as i64;
                         *values.add(idx) = val;
                         idx += 1;
                     }
                 }
             }
-        }
-        *col_ptr.add(n) = idx as i64;
+            *col_ptr.add(n) = idx as i64;
 
-        if idx == 0 {
-            *col_ptr.add(n) = 1;
-            *row_ind.add(0) = 0;
-            *values.add(0) = 0.0;
-            sparse_ref.nzmax = 1;
-        } else {
-            sparse_ref.nzmax = idx;
-        }
+            if idx == 0 {
+                *col_ptr.add(n) = 1;
+                *row_ind.add(0) = 0;
+                *values.add(0) = 0.0;
+                sparse_ref.nzmax = 1;
+            } else {
+                sparse_ref.nzmax = idx;
+            }
 
-        Ok(sparse)
+            Ok(sparse)
+        }
     }
 
     /// Convert DMatrix to CHOLMOD dense format (alternative approach)
@@ -176,27 +277,29 @@ impl SpqrFactorization {
         matrix: &DMatrix<f64>,
         cc: *mut ffi::cholmod_common,
     ) -> Result<*mut ffi::cholmod_dense, String> {
-        let m = matrix.nrows();
-        let n = matrix.ncols();
+        unsafe {
+            let m = matrix.nrows();
+            let n = matrix.ncols();
 
-        let dense = ffi::cholmod_l_allocate_dense(m, n, m, ffi::CHOLMOD_REAL as i32, cc);
+            let dense = ffi::cholmod_l_allocate_dense(m, n, m, ffi::CHOLMOD_REAL as i32, cc);
 
-        let dense_ref = &mut *dense;
-        let data_pointer = dense_ref.x as *mut f64;
-        let acc_data_pointer = unsafe_pointer_for_threads::<f64> {
-            pointer: NonNull::new(data_pointer).unwrap(),
-        };
+            let dense_ref = &mut *dense;
+            let data_pointer = dense_ref.x as *mut f64;
+            let acc_data_pointer = unsafe_pointer_for_threads::<f64> {
+                pointer: NonNull::new(data_pointer).unwrap(),
+            };
 
-        //column major for cholmod
+            //column major for cholmod
 
-        (0..n).into_par_iter().for_each(|j| unsafe {
-            let col_pointer = acc_data_pointer.as_ptr().add(j * m);
-            for i in 0..m {
-                *col_pointer.add(i) = matrix[(i, j)];
-            }
-        });
+            (0..n).into_par_iter().for_each(|j| unsafe {
+                let col_pointer = acc_data_pointer.as_ptr().add(j * m);
+                for i in 0..m {
+                    *col_pointer.add(i) = matrix[(i, j)];
+                }
+            });
 
-        Ok(dense)
+            Ok(dense)
+        }
     }
 
     /// Convert CHOLMOD sparse to dense matrix
@@ -204,12 +307,14 @@ impl SpqrFactorization {
         &self,
         sparse: *const ffi::cholmod_sparse,
     ) -> Result<DMatrix<f64>, String> {
-        let dense = ffi::cholmod_l_sparse_to_dense(sparse as *mut _, &mut *self.cc);
+        unsafe {
+            let dense = ffi::cholmod_l_sparse_to_dense(sparse as *mut _, &mut *self.cc);
 
-        let result = self.cholmod_dense_to_nalgebra(dense).unwrap();
-        ffi::cholmod_l_free_dense(&mut (dense as *mut _), &mut *self.cc);
+            let result = self.cholmod_dense_to_nalgebra(dense).unwrap();
+            ffi::cholmod_l_free_dense(&mut (dense as *mut _), &mut *self.cc);
 
-        Ok(result)
+            Ok(result)
+        }
     }
 
     /// Convert CHOLMOD dense to nalgebra DMatrix
@@ -217,27 +322,29 @@ impl SpqrFactorization {
         &self,
         dense: *const ffi::cholmod_dense,
     ) -> Result<DMatrix<f64>, String> {
-        let dense_ref = &*dense;
-        let m = dense_ref.nrow;
-        let n = dense_ref.ncol;
-        let data_pointer = dense_ref.x as *mut f64;
-        let acc_data_pointer = unsafe_pointer_for_threads {
-            pointer: NonNull::new(data_pointer).unwrap(),
-        };
+        unsafe {
+            let dense_ref = &*dense;
+            let m = dense_ref.nrow;
+            let n = dense_ref.ncol;
+            let data_pointer = dense_ref.x as *mut f64;
+            let acc_data_pointer = unsafe_pointer_for_threads {
+                pointer: NonNull::new(data_pointer).unwrap(),
+            };
 
-        let mut matrix = DMatrix::zeros(m, n);
+            let mut matrix = DMatrix::zeros(m, n);
 
-        matrix
-            .par_column_iter_mut()
-            .enumerate()
-            .for_each(|(j, mut col_slice)| unsafe {
-                let col_pointer = acc_data_pointer.as_ptr().add(j * m);
-                for i in 0..m {
-                    col_slice[i] = *col_pointer.add(i);
-                }
-            });
+            matrix
+                .par_column_iter_mut()
+                .enumerate()
+                .for_each(|(j, mut col_slice)| unsafe {
+                    let col_pointer = acc_data_pointer.as_ptr().add(j * m);
+                    for i in 0..m {
+                        col_slice[i] = *col_pointer.add(i);
+                    }
+                });
 
-        Ok(matrix)
+            Ok(matrix)
+        }
     }
 
     pub fn solve_regular(&self, b: &DVector<f64>) -> Result<DVector<f64>, String> {
@@ -280,6 +387,38 @@ impl SpqrFactorization {
 
         let mut c = DVector::zeros(a.nrows());
         for i in 0..a.nrows() {
+            c[i] = b[perm_vec[i]];
+        }
+
+        let r_main = r.columns(0, rank);
+        let c_main = c.rows(0, rank);
+
+        let y = r_main.transpose().solve_lower_triangular(&c_main).unwrap();
+
+        let x = q * y;
+
+        Ok(x)
+    }
+
+    pub fn solve_underconstrained_from_triplets(
+        &self,
+        triplets: &Vec<(usize, usize, f64)>,
+        b: &DVector<f64>,
+        m: usize,
+        n: usize,
+    ) -> Result<DVector<f64>, String> {
+        let at_triplets: Vec<(usize, usize, f64)> =
+            triplets.par_iter().map(|(i, j, v)| (*j, *i, *v)).collect();
+
+        let qr = SpqrFactorization::new_from_triplets(&at_triplets, n, m).unwrap(); //n, m because transpose
+
+        let q = qr.q_matrix().unwrap();
+        let r = qr.r_matrix().unwrap();
+        let perm_vec = qr.permutation().unwrap();
+        let rank = qr.rank();
+
+        let mut c = DVector::zeros(m);
+        for i in 0..m {
             c[i] = b[perm_vec[i]];
         }
 

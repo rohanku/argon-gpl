@@ -1,20 +1,12 @@
-use std::{error, mem::zeroed};
+use std::collections::HashMap;
 
 use approx::relative_eq;
-use faer::{
-    Mat,
-    sparse::{
-        self, SparseColMat,
-        linalg::qr::{self, QrSymbolicParams},
-    },
-};
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools};
 use nalgebra::{DMatrix, DVector};
 use serde::{Deserialize, Serialize};
 
 //use crate::solver::IntoFaer;
-use faer_ext::IntoFaer;
 const EPSILON: f64 = 1e-10;
 const ROUND_STEP: f64 = 1e-3;
 const INV_ROUND_STEP: f64 = 1. / ROUND_STEP;
@@ -97,6 +89,8 @@ impl Solver {
 
     pub fn solve(&mut self) {
         let method: u64 = 2;
+        use std::time::Instant;
+        let start_time = Instant::now();
         if method == 0 {
             self.solve_svd();
         } else if method == 1 {
@@ -104,29 +98,54 @@ impl Solver {
         } else if method == 2 {
             self.solve_qr_sparse();
         }
+        let elapsed_time = start_time.elapsed();
+
+        use std::fs::OpenOptions;
+        use std::io::Write;
+
+        let time_str = format!("time taken: {:?}\n", elapsed_time);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("time_count.txt")
+            .unwrap();
+        file.write_all(time_str.as_bytes()).unwrap();
     }
 
     pub fn solve_qr_sparse(&mut self) {
-        use nalgebra::{DMatrix, DVector};
-        use nalgebra::{Dyn, Matrix, VecStorage};
-        use rayon::prelude::*;
         use std::time::Instant;
+        let start_time = Instant::now();
+        use nalgebra::{DMatrix, DVector};
+        use nalgebra_sparse::{CooMatrix, CsrMatrix};
+        use rayon::prelude::*;
 
-        let tolerance = 0.03;
+        let _tolerance = 0.03;
         let n_vars = self.next_var as usize;
         if n_vars == 0 || self.constraints.is_empty() {
             return;
         }
 
-        let temp_a: Vec<f64> = self
+        let triplets: Vec<(usize, usize, f64)> = self
             .constraints
             .par_iter()
-            .flat_map(|c| c.expr.coeff_vec(n_vars))
+            .enumerate()
+            .flat_map(|(c_index, c)| {
+                c.expr
+                    .coeff_vec(n_vars)
+                    .into_par_iter()
+                    .enumerate()
+                    .filter_map(move |(v_index, v)| {
+                        if v != 0.0 {
+                            Some((c_index, v_index, v))
+                        } else {
+                            None
+                        }
+                    })
+            })
             .collect();
 
-        let a: DMatrix<f64> = DMatrix::from_row_iterator(self.constraints.len(), n_vars, temp_a);
-        let m = a.nrows();
-        let n = a.ncols();
+        let m = self.constraints.iter().count();
+        let n = n_vars;
 
         let temp_b: Vec<f64> = self
             .constraints
@@ -139,46 +158,25 @@ impl Solver {
         let temp_a_constraind_ids: Vec<u64> = self.constraints.par_iter().map(|c| c.id).collect();
         let a_constraint_ids = Vec::from_iter(temp_a_constraind_ids);
 
-        let start_time = Instant::now();
+        let mut a_coo = CooMatrix::new(m, n);
+        for (i, j, v) in triplets.iter() {
+            a_coo.push(*i, *j, *v);
+        }
+        let a_sparse: CsrMatrix<f64> = CsrMatrix::from(&a_coo);
 
-        let qr = SpqrFactorization::new(&a).unwrap();
+        let qr = SpqrFactorization::new_from_triplets(&triplets, m, n).unwrap();
 
         let rank = qr.rank();
-        let Q = qr.q_matrix();
-        let R = qr.r_matrix();
         let E = qr.permutation();
 
         let x = if m >= n {
             qr.solve_regular(&b).unwrap()
         } else {
-            // let at = a.transpose();
-            // let aat = &a * &at;
-            // let qr_normal = SpqrFactorization::new(&aat).unwrap();
-            // let y = qr_normal.solve_regular(&b).unwrap();
-            // &at * &y
-            qr.solve_underconstrained(&a, &b).unwrap()
+            qr.solve_underconstrained_from_triplets(&triplets, &b, m, n)
+                .unwrap()
         };
 
-        let residual = &b - &a * &x;
-
-        let elapsed_time = start_time.elapsed();
-
-        use std::fs;
-        use std::fs::OpenOptions;
-        use std::io::{self, Write};
-
-        let time_str = format!(
-            "sparse qr time on {rows}x{cols} taken: {:?}\n",
-            elapsed_time,
-            rows = m,
-            cols = n
-        );
-        let mut file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("sparse_qr_time_count.txt")
-            .unwrap();
-        file.write_all(time_str.as_bytes()).unwrap();
+        let residual = &b - &a_sparse * &x;
 
         let tolerance = 1e-10;
 
@@ -191,12 +189,17 @@ impl Solver {
         let forward = E.unwrap();
 
         let determ_var_idx: Vec<usize> = forward[0..rank].to_vec();
-        let free_var_idx: Vec<usize> = forward[rank..n].to_vec();
+        let _free_var_idx: Vec<usize> = forward[rank..n].to_vec();
 
-        for (i, &r) in determ_var_idx.iter().enumerate() {
-            let actual_val = x[(r, 0)];
-            self.solved_vars.insert(Var(r as u64), actual_val);
-        }
+        let par_solved_vars: HashMap<Var, f64> = determ_var_idx
+            .par_iter()
+            .map(|&r| {
+                let actual_val = x[(r, 0)];
+                (Var(r as u64), actual_val)
+            })
+            .collect();
+
+        self.solved_vars.extend(par_solved_vars);
 
         for constraint in self.constraints.iter_mut() {
             substitute_expr(&self.solved_vars, &mut constraint.expr);
@@ -208,15 +211,31 @@ impl Solver {
         }
         self.constraints
             .retain(|constraint| !constraint.expr.coeffs.is_empty());
+
+        let elapsed_time = start_time.elapsed();
+
+        use std::fs::OpenOptions;
+        use std::io::Write;
+
+        let time_str = format!(
+            "time taken on {row}x{col}: {:?}\n",
+            elapsed_time,
+            row = m,
+            col = n
+        );
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("spqr_time_n_size.txt")
+            .unwrap();
+        file.write_all(time_str.as_bytes()).unwrap();
     }
 
     pub fn solve_qr(&mut self) {
-        use faer::linalg::triangular_solve::solve_upper_triangular_in_place_with_conj;
-        use faer::mat;
-        use faer::{Conj, Mat};
-        use faer_ext::IntoFaer;
+        use faer::Mat;
+
         use nalgebra::{DMatrix, DVector};
-        use nalgebra::{Dyn, Matrix, VecStorage};
+
         use rayon::prelude::*;
 
         let tolerance = 0.03;
@@ -259,7 +278,7 @@ impl Solver {
         let qr: ColPivQr<f64> = ColPivQr::new(A.as_ref());
         let R = qr.R();
         let P = qr.P();
-        let Q = qr.compute_Q();
+        let _Q = qr.compute_Q();
 
         let rank_A = R
             .diagonal()
@@ -274,7 +293,7 @@ impl Solver {
             qr.solve_lstsq(&B)
         } else {
             let At = A.transpose();
-            let AAt = &A * &At;
+            let AAt = &A * At;
             let qr_normal = ColPivQr::new(AAt.as_ref());
             let y = qr_normal.solve_lstsq(B.as_ref());
             At * y
@@ -293,9 +312,9 @@ impl Solver {
         let (forward, __) = P.arrays();
 
         let determ_var_idx: Vec<usize> = forward[0..rank_A].to_vec();
-        let free_var_idx: Vec<usize> = forward[rank_A..n].to_vec();
+        let _free_var_idx: Vec<usize> = forward[rank_A..n].to_vec();
 
-        for (i, &r) in determ_var_idx.iter().enumerate() {
+        for (_i, &r) in determ_var_idx.iter().enumerate() {
             let actual_val = x[(r, 0)];
             self.solved_vars.insert(Var(r as u64), actual_val);
         }
