@@ -149,8 +149,7 @@ impl Solver {
 
         let b = DVector::from_iterator(self.constraints.len(), temp_b);
         
-        // TODO: Consider not using parallel processing here. Not enough vars to beat overhead.
-        let a_constraint_ids: Vec<u64> = self.constraints.par_iter().map(|c| c.id).collect();
+        let a_constraint_ids: Vec<u64> = self.constraints.iter().map(|c| c.id).collect();
 
         let mut a_coo = CooMatrix::new(m, n);
         for (i, j, v) in triplets.iter() {
@@ -251,8 +250,7 @@ impl Solver {
 
         let b = DVector::from_iterator(self.constraints.len(), temp_b);
         
-        // TODO: Consider not using parallel processing here. Not enough vars to beat overhead.
-        let a_constraint_ids: Vec<u64> = self.constraints.par_iter().map(|c| c.id).collect();
+        let a_constraint_ids: Vec<u64> = self.constraints.iter().map(|c| c.id).collect();
 
         let A = Mat::from_fn(a.nrows(), a.ncols(), |i, j| a[(i, j)]);
         let B = Mat::from_fn(b.nrows(), b.ncols(), |i, j| b[(i, j)]);
