@@ -182,8 +182,11 @@ impl Solver {
             }
         }
 
+        ///TODO: stop returning dense nullspace, get in sparse form
         let ones_vector: DVector<f64> = DVector::from_element(n - rank, 1.0);
-        let null_space_components = qr.get_nullspace().unwrap().abs() * ones_vector;
+        //let null_space_components = qr.get_nullspace().unwrap().abs() * ones_vector;
+        let null_space_components = qr.get_nspace_sparse().unwrap() * ones_vector;
+
         let par_solved_vars: HashMap<Var, f64> = (0..n)
             .into_par_iter()
             .filter(|&i| null_space_components[i] < tolerance)
@@ -195,6 +198,7 @@ impl Solver {
 
         self.solved_vars.extend(par_solved_vars);
 
+        ///TODO: also eliminate variables that have been solved
         for constraint in self.constraints.iter_mut() {
             substitute_expr(&self.solved_vars, &mut constraint.expr);
             if constraint.expr.coeffs.is_empty()
@@ -532,99 +536,3 @@ mod tests {
         assert!(!solver.solved_vars.contains_key(&z));
     }
 }
-
-/*///Uses QR to solve least squares, and then checks residuals to get bad constraints
-pub fn ls_residuals(&self, A: Mat<f64>, B: Mat<f64>) {
-    let m = A.nrows();
-    let n = A.ncols();
-
-    let qr = A.col_piv_qr();
-    let Q = qr.q();
-    let R = qr.r();
-    let P = qr.p().to_mat();
-
-    let rank = R
-        .diagonal()
-        .as_slice()
-        .iter()
-        .filter(|&&val| val.abs() > tolerance)
-        .count();
-
-    let c = Q.transpose() * B;
-    let c1 = c.rows(0..rank);
-    let R11 = R.block(0, 0, rank, rank);
-
-    let mut y1 = c1.to_owned();
-    solve_upper_triangular_in_place_with_conj(
-        R11.as_ref(),
-        y1.as_mut(),
-        Conj::No,
-        Parallelism::None,
-    );
-
-    let x = P * y1;
-    let residuals = (B - A * x).col(1);
-    let residuals_norm = residuals.norm_l2();
-
-    let mut badConstraints = false;
-
-    for r in 0..residuals.nrows() {
-        if residuals[(r, 0)].abs() > 1e-3 {
-            badConstraints = true;
-        }
-    }
-
-    return Vec![b - A * x, x];
-} */
-
-// pub fn solve_sparse(&mut self) {
-//     use faer::linalg::triangular_solve::solve_upper_triangular_in_place_with_conj;
-//     use faer::mat;
-//     use faer::{Conj, Mat};
-//     use faer_ext::IntoFaer;
-//     use nalgebra::{DMatrix, DVector};
-//     use nalgebra::{Dyn, Matrix, VecStorage};
-//     use rayon::prelude::*;
-
-//     let tolerance = 0.03;
-//     let n_vars = self.next_var as usize;
-//     if n_vars == 0 || self.constraints.is_empty() {
-//         return;
-//     }
-
-//     let a: DMatrix<f64> = DMatrix::from_row_iterator(
-//         self.constraints.len(),
-//         n_vars,
-//         self.constraints
-//             .iter()
-//             .flat_map(|c| c.expr.coeff_vec(n_vars)),
-//     );
-
-//     let b = DVector::from_iterator(
-//         self.constraints.len(),
-//         self.constraints.iter().map(|c| -c.expr.constant),
-//     );
-
-//     let temp_a_constraind_ids: Vec<u64> = self.constraints.par_iter().map(|c| c.id).collect();
-//     let a_constraint_ids = Vec::from_iter(temp_a_constraind_ids);
-
-//     let m = a.nrows();
-//     let n = b.ncols();
-
-//     use faer::sparse::linalg::solvers::Qr;
-//     let mut triplets = Vec::new();
-
-//     for j in 0..n {
-//         for i in 0..m {
-//             let coef = a[(i, j)];
-//             if coef.abs() < tolerance {
-//                 triplets.push(faer::sparse::Triplet::new(i, j, coef));
-//             }
-//         }
-//     }
-//     let sparse_A = faer::sparse::SparseColMat::try_new_from_triplets(m, n, &triplets).unwrap();
-//     let symbolic = sparse::linalg::solvers::SymbolicQr::try_new(sparse_A.symbolic()).unwrap();
-
-//     let qr = Qr::try_new_with_symbolic(symbolic, sparse_A.as_ref()).unwrap();
-//     let r = qr.
-// }

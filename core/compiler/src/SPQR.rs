@@ -10,9 +10,12 @@ mod ffi {
 
 use nalgebra::DMatrix;
 use nalgebra::DVector;
+use nalgebra_sparse::{CooMatrix, CsrMatrix};
 use rayon::prelude::*;
 use std::ptr;
 use std::ptr::NonNull;
+
+use crate::spqr_wrapper::unsafe_pointer_for_threads;
 
 ///SpqrFactorization struct
 ///Used for SuiteSparse,
@@ -135,24 +138,116 @@ impl SpqrFactorization {
         }
     }
 
-    ///returns the R matrix from the QR of A
+    ///returns the Dense R matrix from the QR of A
     pub fn ra_matrix(&self) -> Result<DMatrix<f64>, String> {
         unsafe { self.cholmod_sparse_to_dense(self.r_a, self.cc_a) }
     }
 
-    ///Returns the Q matrix from the QR of A
+    ///Returns the Dense Q matrix from the QR of A
     pub fn qa_matrix(&self) -> Result<DMatrix<f64>, String> {
         unsafe { self.cholmod_sparse_to_dense(self.q_a, self.cc_a) }
     }
 
-    ///Returns the R (FULL) matrix from the QR of AT
+    ///Returns the Dense R (FULL) matrix from the QR of AT
     pub fn rat_matrix(&self) -> Result<DMatrix<f64>, String> {
         unsafe { self.cholmod_sparse_to_dense(self.r_at, self.cc_at) }
     }
 
-    ///Returns the Q (FULL) matrix from the QR of AT
+    ///Returns the Dense Q (FULL) matrix from the QR of AT
     pub fn qat_matrix(&self) -> Result<DMatrix<f64>, String> {
         unsafe { self.cholmod_sparse_to_dense(self.q_at, self.cc_at) }
+    }
+
+    ///Returns the csr Q (FULL) matrix from the QR of AT
+    pub fn qat_csr_matrix(&self) -> Result<CsrMatrix<f64>, String> {
+        unsafe { self.cholmod_sparse_to_csr(self.q_at) }
+    }
+
+    ///Converts the cholmod_sparse matrix to a csr matrix
+    pub unsafe fn cholmod_sparse_to_csr(
+        &self,
+        mat: *mut ffi::cholmod_sparse,
+    ) -> Result<CsrMatrix<f64>, String> {
+        let sparse = &*mat;
+        let sparse_m = sparse.nrow;
+        let sparse_n = sparse.ncol;
+
+        let col_pointer = sparse.p as *mut i64;
+        let row_pointer = sparse.i as *mut i64;
+        let val = sparse.x as *mut f64;
+
+        let col_pointer_wrapper = pointer_wrapper {
+            pointer: NonNull::new(col_pointer).unwrap(),
+        };
+        let row_pointer_wrapper = pointer_wrapper {
+            pointer: NonNull::new(row_pointer).unwrap(),
+        };
+        let val_pointer_wrapper = pointer_wrapper {
+            pointer: NonNull::new(val).unwrap(),
+        };
+
+        let triplets: Vec<(usize, usize, f64)> = (0..sparse_n)
+            .into_par_iter()
+            .flat_map(|j| unsafe {
+                let start = *col_pointer_wrapper.as_ptr().add(j);
+                let end = *col_pointer_wrapper.as_ptr().add(j + 1);
+
+                let mut curr_column_triplets = Vec::with_capacity(end as usize - start as usize);
+
+                for index in start..end {
+                    let i = *row_pointer_wrapper.as_ptr().add(index as usize);
+                    let value = *val_pointer_wrapper.as_ptr().add(index as usize);
+                    curr_column_triplets.push((i as usize, j as usize, value));
+                }
+                curr_column_triplets
+            })
+            .collect();
+
+        let coo = CooMatrix::try_from_triplets_iter(sparse_m, sparse_n, triplets).unwrap();
+
+        Ok(CsrMatrix::from(&coo))
+    }
+
+    pub fn get_nspace_sparse(&self) -> Result<CsrMatrix<f64>, String> {
+        unsafe {
+            let qt = &*self.q_at;
+
+            let col_pointer = qt.p as *mut i64;
+            let row_pointer = qt.i as *mut i64;
+            let vals = qt.x as *mut f64;
+
+            let col_pointer_wrapper = pointer_wrapper {
+                pointer: NonNull::new(col_pointer).unwrap(),
+            };
+            let row_pointer_wrapper = pointer_wrapper {
+                pointer: NonNull::new(row_pointer).unwrap(),
+            };
+            let vals_pointer_wrapper = pointer_wrapper {
+                pointer: NonNull::new(vals).unwrap(),
+            };
+
+            if self.rank >= self.n {
+                return Ok(CsrMatrix::zeros(self.m, 0));
+            }
+            let triplets: Vec<(usize, usize, f64)> = (0..self.n - self.rank)
+                .into_par_iter()
+                .flat_map(|j| unsafe {
+                    let col_index = self.rank + j;
+                    let start = *col_pointer_wrapper.as_ptr().add(col_index) as usize;
+                    let end = *col_pointer_wrapper.as_ptr().add(col_index + 1) as usize;
+                    let mut local_triplets = Vec::with_capacity(end - start);
+                    for index in start..end {
+                        let i = *row_pointer_wrapper.as_ptr().add(index);
+                        let val = *vals_pointer_wrapper.as_ptr().add(index);
+                        local_triplets.push((i as usize, j as usize, val.abs()));
+                    }
+                    local_triplets
+                })
+                .collect();
+            let coo =
+                CooMatrix::try_from_triplets_iter(self.n, self.n - self.rank, triplets).unwrap();
+            Ok(CsrMatrix::from(&coo))
+        }
     }
 
     ///Returns the permutation vector from QR of A
@@ -190,7 +285,7 @@ impl SpqrFactorization {
         }
     }
     ///Returns the rank of the matrix A/AT obtained from QR
-    ///Warning: not always the actual rank, see Kahan matrices
+    ///not always the actual rank, see Kahan matrices
     pub fn rank(&self) -> usize {
         self.rank
     }
