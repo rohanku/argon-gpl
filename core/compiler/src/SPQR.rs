@@ -15,8 +15,6 @@ use rayon::prelude::*;
 use std::ptr;
 use std::ptr::NonNull;
 
-use crate::spqr_wrapper::unsafe_pointer_for_threads;
-
 ///SpqrFactorization struct
 ///Used for SuiteSparse,
 pub struct SpqrFactorization {
@@ -101,7 +99,7 @@ impl SpqrFactorization {
 
             let at_econ: i64 = 1 + (n as i64);
 
-            let rank_at = ffi::SuiteSparseQR_C_QR(
+            let _rank_at = ffi::SuiteSparseQR_C_QR(
                 ffi::SPQR_ORDERING_DEFAULT as i32,
                 ffi::SPQR_DEFAULT_TOL as f64,
                 at_econ, //want full version of QR for AT
@@ -168,44 +166,47 @@ impl SpqrFactorization {
         &self,
         mat: *mut ffi::cholmod_sparse,
     ) -> Result<CsrMatrix<f64>, String> {
-        let sparse = &*mat;
-        let sparse_m = sparse.nrow;
-        let sparse_n = sparse.ncol;
+        unsafe {
+            let sparse = &*mat;
+            let sparse_m = sparse.nrow;
+            let sparse_n = sparse.ncol;
 
-        let col_pointer = sparse.p as *mut i64;
-        let row_pointer = sparse.i as *mut i64;
-        let val = sparse.x as *mut f64;
+            let col_pointer = sparse.p as *mut i64;
+            let row_pointer = sparse.i as *mut i64;
+            let val = sparse.x as *mut f64;
 
-        let col_pointer_wrapper = pointer_wrapper {
-            pointer: NonNull::new(col_pointer).unwrap(),
-        };
-        let row_pointer_wrapper = pointer_wrapper {
-            pointer: NonNull::new(row_pointer).unwrap(),
-        };
-        let val_pointer_wrapper = pointer_wrapper {
-            pointer: NonNull::new(val).unwrap(),
-        };
+            let col_pointer_wrapper = pointer_wrapper {
+                pointer: NonNull::new(col_pointer).unwrap(),
+            };
+            let row_pointer_wrapper = pointer_wrapper {
+                pointer: NonNull::new(row_pointer).unwrap(),
+            };
+            let val_pointer_wrapper = pointer_wrapper {
+                pointer: NonNull::new(val).unwrap(),
+            };
 
-        let triplets: Vec<(usize, usize, f64)> = (0..sparse_n)
-            .into_par_iter()
-            .flat_map(|j| unsafe {
-                let start = *col_pointer_wrapper.as_ptr().add(j);
-                let end = *col_pointer_wrapper.as_ptr().add(j + 1);
+            let triplets: Vec<(usize, usize, f64)> = (0..sparse_n)
+                .into_par_iter()
+                .flat_map(|j| {
+                    let start = *col_pointer_wrapper.as_ptr().add(j);
+                    let end = *col_pointer_wrapper.as_ptr().add(j + 1);
 
-                let mut curr_column_triplets = Vec::with_capacity(end as usize - start as usize);
+                    let mut curr_column_triplets =
+                        Vec::with_capacity(end as usize - start as usize);
 
-                for index in start..end {
-                    let i = *row_pointer_wrapper.as_ptr().add(index as usize);
-                    let value = *val_pointer_wrapper.as_ptr().add(index as usize);
-                    curr_column_triplets.push((i as usize, j as usize, value));
-                }
-                curr_column_triplets
-            })
-            .collect();
+                    for index in start..end {
+                        let i = *row_pointer_wrapper.as_ptr().add(index as usize);
+                        let value = *val_pointer_wrapper.as_ptr().add(index as usize);
+                        curr_column_triplets.push((i as usize, j as usize, value));
+                    }
+                    curr_column_triplets
+                })
+                .collect();
 
-        let coo = CooMatrix::try_from_triplets_iter(sparse_m, sparse_n, triplets).unwrap();
+            let coo = CooMatrix::try_from_triplets_iter(sparse_m, sparse_n, triplets).unwrap();
 
-        Ok(CsrMatrix::from(&coo))
+            Ok(CsrMatrix::from(&coo))
+        }
     }
 
     pub fn get_nspace_sparse(&self) -> Result<CsrMatrix<f64>, String> {
@@ -231,7 +232,7 @@ impl SpqrFactorization {
             }
             let triplets: Vec<(usize, usize, f64)> = (0..self.n - self.rank)
                 .into_par_iter()
-                .flat_map(|j| unsafe {
+                .flat_map(|j| {
                     let col_index = self.rank + j;
                     let start = *col_pointer_wrapper.as_ptr().add(col_index) as usize;
                     let end = *col_pointer_wrapper.as_ptr().add(col_index + 1) as usize;
@@ -411,7 +412,7 @@ impl SpqrFactorization {
             matrix
                 .par_column_iter_mut()
                 .enumerate()
-                .for_each(|(j, mut col_slice)| unsafe {
+                .for_each(|(j, mut col_slice)| {
                     let col_pointer = acc_data_pointer.as_ptr().add(j * m);
                     for i in 0..m {
                         col_slice[i] = *col_pointer.add(i);
@@ -484,7 +485,7 @@ impl SpqrFactorization {
     ///Returns the nullspace vectors of A. Uses the last n - r rows of Q from AT
     pub fn get_nullspace(&self) -> Result<DMatrix<f64>, String> {
         let q = &self.qat_matrix().unwrap();
-        let null_space_vectors = q.columns(self.rank, self.n - self.rank).clone_owned(); //might have to change depending on memmove time
+        let null_space_vectors = q.columns(self.rank, self.n - self.rank).clone_owned();
         return Ok(null_space_vectors);
     }
 }

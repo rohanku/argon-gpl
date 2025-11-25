@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 
-use approx::relative_eq;
 use indexmap::{IndexMap, IndexSet};
 use itertools::{Either, Itertools};
-use nalgebra::{DMatrix, DVector};
 use serde::{Deserialize, Serialize};
 
-//use crate::solver::IntoFaer;
 const EPSILON: f64 = 1e-10;
 const ROUND_STEP: f64 = 1e-3;
 const INV_ROUND_STEP: f64 = 1. / ROUND_STEP;
@@ -88,38 +85,12 @@ impl Solver {
     }
 
     pub fn solve(&mut self) {
-        let method: u64 = 2;
         use std::time::Instant;
         let start_time = Instant::now();
-        if method == 0 {
-            self.solve_svd();
-        } else if method == 1 {
-            self.solve_qr();
-        } else if method == 2 {
-            self.solve_qr_sparse();
-        }
-        let elapsed_time = start_time.elapsed();
-
-        use std::fs::OpenOptions;
-        use std::io::Write;
-
-        let time_str = format!("time taken: {:?}\n", elapsed_time);
-        let mut file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("time_count.txt")
-            .unwrap();
-        file.write_all(time_str.as_bytes()).unwrap();
-    }
-
-    pub fn solve_qr_sparse(&mut self) {
-        use std::time::Instant;
-        let start_time = Instant::now();
-        use nalgebra::{DMatrix, DVector};
+        use nalgebra::DVector;
         use nalgebra_sparse::{CooMatrix, CsrMatrix};
         use rayon::prelude::*;
 
-        let _tolerance = 0.03;
         let n_vars = self.next_var as usize;
         if n_vars == 0 || self.constraints.is_empty() {
             return;
@@ -192,7 +163,6 @@ impl Solver {
         let qr = SpqrFactorization::from_triplets(&triplets, m, n).unwrap();
 
         let rank = qr.rank();
-        let E = qr.permutation_a();
 
         let x = qr.solve(&b).unwrap();
 
@@ -222,7 +192,6 @@ impl Solver {
 
         self.solved_vars.extend(par_solved_vars);
 
-        ///TODO: also eliminate variables that have been solved
         for constraint in self.constraints.iter_mut() {
             substitute_expr(&self.solved_vars, &mut constraint.expr);
             if constraint.expr.coeffs.is_empty()
@@ -252,144 +221,6 @@ impl Solver {
             .open("spqr_time_n_size.txt")
             .unwrap();
         file.write_all(time_str.as_bytes()).unwrap();
-    }
-
-    pub fn solve_qr(&mut self) {
-        use faer::Mat;
-
-        use nalgebra::{DMatrix, DVector};
-
-        use rayon::prelude::*;
-
-        let tolerance = 0.03;
-        let n_vars = self.next_var as usize;
-        if n_vars == 0 || self.constraints.is_empty() {
-            return;
-        }
-
-        let temp_a: Vec<f64> = self
-            .constraints
-            .par_iter()
-            .flat_map(|c| c.expr.coeff_vec(n_vars))
-            .collect();
-
-        let a: DMatrix<f64> = DMatrix::from_row_iterator(self.constraints.len(), n_vars, temp_a);
-
-        let temp_b: Vec<f64> = self
-            .constraints
-            .par_iter()
-            .map(|c| -c.expr.constant)
-            .collect();
-
-        let b = DVector::from_iterator(self.constraints.len(), temp_b);
-
-        let temp_a_constraind_ids: Vec<u64> = self.constraints.par_iter().map(|c| c.id).collect();
-        let a_constraint_ids = Vec::from_iter(temp_a_constraind_ids);
-
-        let A = Mat::from_fn(a.nrows(), a.ncols(), |i, j| a[(i, j)]);
-        let B = Mat::from_fn(b.nrows(), b.ncols(), |i, j| b[(i, j)]);
-
-        let m = A.nrows();
-        let n = A.ncols();
-
-        print!("mmmmmmm {:?}", m);
-        print!("nnnnnn {:?}", n);
-
-        use faer::linalg::solvers::ColPivQr;
-        //use faer::sparse::linalg::solvers::Qr;
-
-        let qr: ColPivQr<f64> = ColPivQr::new(A.as_ref());
-        let R = qr.R();
-        let P = qr.P();
-        let _Q = qr.compute_Q();
-
-        let rank_A = R
-            .diagonal()
-            .column_vector()
-            .par_iter()
-            .filter(|&&val| val.abs() > tolerance)
-            .count();
-
-        use faer::prelude::SolveLstsq;
-
-        let x = if m >= n {
-            qr.solve_lstsq(&B)
-        } else {
-            let At = A.transpose();
-            let AAt = &A * At;
-            let qr_normal = ColPivQr::new(AAt.as_ref());
-            let y = qr_normal.solve_lstsq(B.as_ref());
-            At * y
-        };
-
-        let residual = &B - &A * &x;
-
-        let tolerance = 1e-10;
-
-        for i in 0..residual.nrows() {
-            let r = residual[(i, 0)];
-            if r.abs() > tolerance {
-                self.inconsistent_constraints.insert(a_constraint_ids[i]);
-            }
-        }
-        let (forward, __) = P.arrays();
-
-        let determ_var_idx: Vec<usize> = forward[0..rank_A].to_vec();
-        let _free_var_idx: Vec<usize> = forward[rank_A..n].to_vec();
-
-        for (_i, &r) in determ_var_idx.iter().enumerate() {
-            let actual_val = x[(r, 0)];
-            self.solved_vars.insert(Var(r as u64), actual_val);
-        }
-    }
-
-    /// Solves for as many variables as possible and substitutes their values into existing constraints.
-    /// Deletes constraints that no longer contain unsolved variables.
-    pub fn solve_svd(&mut self) {
-        let n_vars = self.next_var as usize;
-        if n_vars == 0 || self.constraints.is_empty() {
-            return;
-        }
-        let a = DMatrix::from_row_iterator(
-            self.constraints.len(),
-            n_vars,
-            self.constraints
-                .iter()
-                .flat_map(|c| c.expr.coeff_vec(n_vars)),
-        );
-        let b = DVector::from_iterator(
-            self.constraints.len(),
-            self.constraints.iter().map(|c| -c.expr.constant),
-        );
-
-        let svd = a.clone().svd(true, true);
-        let vt = svd.v_t.as_ref().expect("No V^T matrix");
-        let r = svd.rank(EPSILON);
-        if r == 0 {
-            return;
-        }
-        let vt_recons = vt.rows(0, r);
-        let sol = svd.solve(&b, EPSILON).unwrap();
-
-        for i in 0..self.next_var {
-            let recons = (vt_recons.transpose() * vt_recons.column(i as usize))[((i as usize), 0)];
-            if !self.solved_vars.contains_key(&Var(i))
-                && relative_eq!(recons, 1., epsilon = EPSILON)
-            {
-                let val = round(sol[(i as usize, 0)]);
-                self.solved_vars.insert(Var(i), val);
-            }
-        }
-        for constraint in self.constraints.iter_mut() {
-            substitute_expr(&self.solved_vars, &mut constraint.expr);
-            if constraint.expr.coeffs.is_empty()
-                && approx::relative_ne!(constraint.expr.constant, 0., epsilon = EPSILON)
-            {
-                self.inconsistent_constraints.insert(constraint.id);
-            }
-        }
-        self.constraints
-            .retain(|constraint| !constraint.expr.coeffs.is_empty());
     }
 
     pub fn value_of(&self, var: Var) -> Option<f64> {
