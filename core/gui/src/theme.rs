@@ -10,6 +10,8 @@ pub struct Theme {
     pub selection: Rgba,
     pub input_bg: Rgba,
     pub axes: Rgba,
+    pub error: Rgba,
+    pub subtext: Rgba,
 }
 
 lazy_static! {
@@ -22,6 +24,8 @@ lazy_static! {
         selection: rgba(0x7236ff22),
         input_bg: rgb(0xEEEEEE),
         axes: rgb(0xcdb8ff),
+        error: rgb(0xff00000),
+        subtext: rgb(0x555555),
     };
     pub static ref DARK_THEME: Theme = Theme {
         titlebar: rgb(0x1a1a1a),
@@ -32,5 +36,7 @@ lazy_static! {
         selection: rgba(0x7236ff66),
         input_bg: rgb(0x1a1a1a),
         axes: rgb(0x7236ff),
+        error: rgb(0xff00000),
+        subtext: rgb(0x999999),
     };
 }

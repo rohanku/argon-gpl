@@ -1,7 +1,7 @@
 [workspace]
 
 resolver = "2"
-members = ["core/compiler", "core/gui", "core/lsp-server"]
+members = ["core/compiler", "core/gui", "core/lang-server"]
 
 [workspace.dependencies]
 anyhow = "1"
@@ -27,6 +27,8 @@ futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
+tower-lsp-server = "0.22"
 
 geometry = { version = "0.7", registry = "substrate" }
 enumify = { version = "0.2", registry = "substrate" }
+uniquify = { version = "0.4", registry = "substrate" }

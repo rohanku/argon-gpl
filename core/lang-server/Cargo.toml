@@ -1,5 +1,5 @@
 [package]
-name = "lsp-server"
+name = "lang-server"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,7 +7,7 @@ edition = "2024"
 compiler = { version = "0.1.0", path = "../compiler" }
 
 tokio = { version = "1", features = ["full"] }
-tower-lsp = "0.20"
+tower-lsp-server = { workspace = true }
 tokio-util = { version = "0.7", features = ["codec"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,3 +24,4 @@ indexmap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
+homedir = "0.3"

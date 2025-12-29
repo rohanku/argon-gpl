@@ -32,12 +32,13 @@ use crate::{
     solver::{LinearExpr, Solver},
 };
 
-pub const BUILTINS: [&str; 10] = [
+pub const BUILTINS: [&str; 11] = [
     "cons",
     "head",
     "tail",
     "crect",
     "rect",
+    "text",
     "float",
     "eq",
     "dimension",
@@ -71,7 +72,7 @@ pub fn dynamic_compile(
             }
         }
         CompileOutput::Valid(v) => (v, Vec::new()),
-        _ => unreachable!(),
+        o => return o,
     };
     check_layers(&data, &mut errors);
     if errors.is_empty() {
@@ -505,6 +506,7 @@ impl Ty {
             "Float" => Some(Ty::Float),
             "Rect" => Some(Ty::Rect),
             "Int" => Some(Ty::Int),
+            "String" => Some(Ty::String),
             "()" => Some(Ty::Nil),
             "[]" => Some(Ty::SeqNil),
             _ => None,
@@ -1472,6 +1474,16 @@ impl<'a> AstTransformer for VarIdTyPass<'a> {
                     self.typecheck_kwargs(&args.kwargs, kwarg_defs);
                     (None, Ty::Rect)
                 }
+                "text" => {
+                    // text, layer, x, y
+                    self.typecheck_posargs(
+                        input.span,
+                        &args.posargs,
+                        &[Ty::String, Ty::String, Ty::Float, Ty::Float],
+                    );
+                    self.typecheck_kwargs(&args.kwargs, IndexMap::default());
+                    (None, Ty::Nil)
+                }
                 "cons" => {
                     self.assert_eq_arity(input.span, args.posargs.len(), 2);
                     if args.posargs.len() == 2 {
@@ -1818,6 +1830,16 @@ pub struct Dimension<T> {
     pub span: Option<Span>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Text<T> {
+    pub id: ObjectId,
+    pub text: String,
+    pub layer: String,
+    pub x: T,
+    pub y: T,
+    pub span: Option<Span>,
+}
+
 type FrameId = u64;
 type ValueId = u64;
 pub type CellId = u64;
@@ -2044,11 +2066,22 @@ impl<'a> ExecPass<'a> {
             _ => None,
         }) {
             let cell_id = self.execute_cell(vid, input.args, Some("TOP"));
-            let layers = klayout_lyp::from_reader(BufReader::new(
-                std::fs::File::open(input.lyp_file).unwrap(),
-            ))
-            .unwrap()
-            .into();
+            let layers = if let Ok(layers) = std::fs::File::open(input.lyp_file)
+                .map_err(|_| ())
+                .and_then(|f| klayout_lyp::from_reader(BufReader::new(f)).map_err(|_| ()))
+            {
+                layers.into()
+            } else {
+                return CompileOutput::StaticErrors(StaticErrorCompileOutput {
+                    errors: vec![StaticError {
+                        span: Span {
+                            path: self.ast[&vec![]].path.clone(),
+                            span: cfgrammar::Span::new(0, 0),
+                        },
+                        kind: StaticErrorKind::InvalidLyp,
+                    }],
+                });
+            };
             if self.errors.is_empty() {
                 CompileOutput::Valid(CompiledData {
                     cells: self.compiled_cells,
@@ -2291,6 +2324,14 @@ impl<'a> ExecPass<'a> {
                         span: rect.span.clone(),
                     })
                 }
+                Object::Text(text) => SolvedValue::Text(Text {
+                    id: text.id,
+                    text: text.text.clone(),
+                    layer: text.layer.clone(),
+                    x: state.solver.eval_expr(&text.x).unwrap(),
+                    y: state.solver.eval_expr(&text.y).unwrap(),
+                    span: text.span.clone(),
+                }),
                 Object::Dimension(dim) => SolvedValue::Dimension(Dimension {
                     id: dim.id,
                     p: state.solver.eval_expr(&dim.p).unwrap(),
@@ -2894,6 +2935,42 @@ impl<'a> ExecPass<'a> {
                             );
                             self.cell_state_mut(vref.loc.cell).deferred.insert(defer);
                         }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                "text" => {
+                    let args = c
+                        .state
+                        .posargs
+                        .iter()
+                        .map(|vid| self.values[vid].get_ready())
+                        .collect::<Option<Vec<_>>>();
+                    if let Some(mut args) = args {
+                        assert_eq!(args.len(), 4);
+                        let id = object_id(&mut self.next_id);
+                        let span = self.span(&vref.loc, c.expr.span);
+                        let state = self.cell_states.get_mut(&vref.loc.cell).unwrap();
+                        let y = args.pop().unwrap().as_ref().unwrap_linear().clone();
+                        let x = args.pop().unwrap().as_ref().unwrap_linear().clone();
+                        let layer = args.pop().unwrap().as_ref().unwrap_string().clone();
+                        let text_val = args.pop().unwrap().as_ref().unwrap_string().clone();
+                        let text = Text {
+                            id,
+                            text: text_val,
+                            layer,
+                            x,
+                            y,
+                            span: Some(span.clone()),
+                        };
+                        state.object_emit.push(ObjectEmit {
+                            scope: vref.loc.scope,
+                            object: text.id,
+                            span,
+                        });
+                        state.objects.insert(text.id, text.clone().into());
+                        self.values.insert(vid, Defer::Ready(Value::Nil));
                         true
                     } else {
                         false
@@ -3820,6 +3897,7 @@ pub struct SolvedInstance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SolvedValue {
     Rect(Rect<(f64, LinearExpr)>),
+    Text(Text<f64>),
     Dimension(Dimension<f64>),
     Instance(SolvedInstance),
 }
@@ -3828,6 +3906,7 @@ pub enum SolvedValue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Object {
     Rect(Rect<LinearExpr>),
+    Text(Text<LinearExpr>),
     Dimension(Dimension<LinearExpr>),
     Inst(Instance),
 }
@@ -3835,6 +3914,12 @@ pub enum Object {
 impl From<Rect<LinearExpr>> for Object {
     fn from(value: Rect<LinearExpr>) -> Self {
         Self::Rect(value)
+    }
+}
+
+impl From<Text<LinearExpr>> for Object {
+    fn from(value: Text<LinearExpr>) -> Self {
+        Self::Text(value)
     }
 }
 
@@ -3928,6 +4013,31 @@ pub fn bbox_union(b1: Option<Rect<f64>>, b2: Option<Rect<f64>>) -> Option<Rect<f
         }),
         (Some(r), None) | (None, Some(r)) => Some(r),
         (None, None) => None,
+    }
+}
+
+pub fn bbox_text_union(b: Option<Rect<f64>>, t: &Text<f64>) -> Option<Rect<f64>> {
+    match b {
+        Some(r) => Some(Rect {
+            layer: None,
+            x0: r.x0.min(t.x),
+            y0: r.y0.min(t.y),
+            x1: r.x1.max(t.x),
+            y1: r.y1.max(t.y),
+            id: r.id,
+            construction: true,
+            span: None,
+        }),
+        None => Some(Rect {
+            layer: None,
+            x0: t.x,
+            y0: t.y,
+            x1: t.x,
+            y1: t.y,
+            id: t.id,
+            construction: true,
+            span: None,
+        }),
     }
 }
 
@@ -4071,6 +4181,9 @@ pub enum StaticErrorKind {
     /// Error during parsing.
     #[error("error during parsing")]
     ParseError,
+    /// Invalid LYP file.
+    #[error("invalid LYP file")]
+    InvalidLyp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

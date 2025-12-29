@@ -6,20 +6,21 @@ use std::{
 use canvas::{LayoutCanvas, ShapeFill};
 use compiler::compile::{
     CellId, CompileOutput, CompiledData, ExecErrorCompileOutput, ExecErrorKind, Rect, ScopeId,
-    SolvedValue, bbox_dim_union, bbox_union, ifmatvec,
+    SolvedValue, bbox_dim_union, bbox_text_union, bbox_union, ifmatvec,
 };
+use futures::StreamExt;
 use geometry::transform::TransformationMatrix;
 use gpui::*;
 use indexmap::{IndexMap, IndexSet};
-use lsp_server::rpc::GuiToLspAction;
+use lang_server::rpc::LangServerAction;
 use rgb::Rgb;
 use toolbars::{HierarchySideBar, LayerSideBar, TitleBar, ToolBar};
-use tower_lsp::lsp_types::MessageType;
+use tower_lsp_server::lsp_types::MessageType;
 
 use crate::{
     actions::{Redo, Undo},
     editor::{canvas::ToolState, input::TextInput},
-    rpc::SyncGuiToLspClient,
+    rpc::SyncLangServerClient,
     theme::{DARK_THEME, LIGHT_THEME, Theme},
 };
 
@@ -71,10 +72,11 @@ pub struct Layers {
 pub struct EditorState {
     pub hierarchy_depth: usize,
     pub dark_mode: bool,
+    pub fatal_error: Option<SharedString>,
     pub solved_cell: Entity<Option<CompileOutputState>>,
     pub hide_external_geometry: bool,
     pub layers: Entity<Layers>,
-    pub lsp_client: SyncGuiToLspClient,
+    pub lang_server_client: SyncLangServerClient,
     pub subscriptions: Vec<Subscription>,
     pub(crate) tool: Entity<ToolState>,
 }
@@ -191,6 +193,9 @@ impl EditorState {
                 SolvedValue::Dimension(dim) => {
                     bbox = bbox_dim_union(bbox, dim);
                 }
+                SolvedValue::Text(t) => {
+                    bbox = bbox_text_union(bbox, t);
+                }
             }
         }
 
@@ -234,13 +239,16 @@ impl EditorState {
                     .iter()
                     .any(|e| matches!(e.kind, ExecErrorKind::InvalidCell))
                 {
-                    self.lsp_client
+                    let _ = self
+                        .lang_server_client
                         .show_message(MessageType::ERROR, "Open cell is invalid");
+                    self.fatal_error = Some(SharedString::from("open cell is invalid"));
                     return;
                 }
                 d
             }
             _ => {
+                self.fatal_error = Some(SharedString::from("static compile errors encountered"));
                 return;
             }
         };
@@ -307,12 +315,14 @@ impl EditorState {
             });
             cx.notify();
         });
+        self.fatal_error = None;
     }
 }
 
 impl Editor {
-    pub fn new(cx: &mut Context<Self>, window: &mut Window, lsp_addr: SocketAddr) -> Self {
-        let lsp_client = SyncGuiToLspClient::new(cx.to_async(), lsp_addr);
+    pub fn new(cx: &mut Context<Self>, window: &mut Window, lang_server_addr: SocketAddr) -> Self {
+        let (lang_server_client, mut rx) =
+            SyncLangServerClient::new(cx.to_async(), lang_server_addr);
         let solved_cell = cx.new(|_cx| None);
         let tool = cx.new(|_cx| ToolState::default());
         let layers = cx.new(|_cx| Layers {
@@ -327,12 +337,13 @@ impl Editor {
             EditorState {
                 hierarchy_depth: usize::MAX,
                 dark_mode: true,
+                fatal_error: None,
                 solved_cell,
                 hide_external_geometry: false,
                 tool,
                 layers,
                 subscriptions,
-                lsp_client: lsp_client.clone(),
+                lang_server_client: lang_server_client.clone(),
             }
         });
         let title_bar = cx.new(|_cx| TitleBar::new(&state));
@@ -362,52 +373,54 @@ impl Editor {
             canvas,
             text_input,
         };
-        lsp_client.register_server(editor.clone());
+        cx.to_async()
+            .spawn({
+                let editor = editor.clone();
+                async move |app| loop {
+                    if let Some(exec) = rx.next().await {
+                        exec(&editor, app);
+                    }
+                }
+            })
+            .detach();
+        lang_server_client.register_server();
 
         editor
     }
 
-    pub fn open_cell(&self, cx: &mut AsyncApp, output: CompileOutput, update: bool) {
-        self.state
-            .update(cx, |state, cx| {
-                state.update(cx, output);
-                cx.notify();
-            })
-            .unwrap();
+    pub fn open_cell(&self, cx: &mut App, output: CompileOutput, update: bool) {
+        self.state.update(cx, |state, cx| {
+            state.update(cx, output);
+            cx.notify();
+        });
         if update {
             let state = self.state.clone();
-            self.hierarchy_sidebar
-                .update(cx, move |sidebar, cx| {
-                    let scope_paths: IndexSet<_> = state
-                        .read(cx)
-                        .solved_cell
-                        .read(cx)
-                        .as_ref()
-                        .map(|cell| cell.state.keys().cloned().collect())
-                        .unwrap_or_default();
-                    sidebar.state.update(cx, |state, _cx| {
-                        state
-                            .expanded_scopes
-                            .retain(|path| scope_paths.contains(path));
-                    });
-                    cx.notify();
-                })
-                .unwrap();
+            self.hierarchy_sidebar.update(cx, move |sidebar, cx| {
+                let scope_paths: IndexSet<_> = state
+                    .read(cx)
+                    .solved_cell
+                    .read(cx)
+                    .as_ref()
+                    .map(|cell| cell.state.keys().cloned().collect())
+                    .unwrap_or_default();
+                sidebar.state.update(cx, |state, _cx| {
+                    state
+                        .expanded_scopes
+                        .retain(|path| scope_paths.contains(path));
+                });
+                cx.notify();
+            });
         } else {
-            self.canvas
-                .update(cx, |canvas, cx| {
-                    canvas.fit_to_screen(cx);
+            self.canvas.update(cx, |canvas, cx| {
+                canvas.fit_to_screen(cx);
+                cx.notify();
+            });
+            self.hierarchy_sidebar.update(cx, |sidebar, cx| {
+                sidebar.state.update(cx, |state, cx| {
+                    state.expanded_scopes.clear();
                     cx.notify();
-                })
-                .unwrap();
-            self.hierarchy_sidebar
-                .update(cx, |sidebar, cx| {
-                    sidebar.state.update(cx, |state, cx| {
-                        state.expanded_scopes.clear();
-                        cx.notify();
-                    });
-                })
-                .unwrap();
+                });
+            });
         }
     }
 
@@ -423,17 +436,29 @@ impl Editor {
     }
 
     fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
-        self.state
+        if let Err(e) = self
+            .state
             .read(cx)
-            .lsp_client
-            .dispatch_action(GuiToLspAction::Undo);
+            .lang_server_client
+            .dispatch_action(LangServerAction::Undo)
+        {
+            self.state.update(cx, |state, _cx| {
+                state.fatal_error = Some(format!("{e}").into());
+            });
+        }
     }
 
     fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
-        self.state
+        if let Err(e) = self
+            .state
             .read(cx)
-            .lsp_client
-            .dispatch_action(GuiToLspAction::Redo);
+            .lang_server_client
+            .dispatch_action(LangServerAction::Redo)
+        {
+            self.state.update(cx, |state, _cx| {
+                state.fatal_error = Some(format!("{e}").into());
+            });
+        }
     }
 
     fn theme(&self, cx: &mut Context<Self>) -> &'static Theme {
@@ -472,7 +497,46 @@ impl Render for Editor {
                     .flex_1()
                     .min_h_0()
                     .child(self.hierarchy_sidebar.clone())
-                    .child(div().flex_1().overflow_hidden().child(self.canvas.clone()))
+                    .child({
+                        let mut d = div()
+                            .flex_1()
+                            .relative()
+                            .overflow_hidden()
+                            .child(self.canvas.clone());
+
+                        if let Some(fatal_error) = &self.state.read(cx).fatal_error {
+                            d = d.child(
+                                div()
+                                    .id("error_modal")
+                                    .bg(theme.bg)
+                                    .border_1()
+                                    .border_color(theme.divider)
+                                    .rounded_sm()
+                                    .absolute()
+                                    .p_2()
+                                    .child(
+                                        div().flex().flex_row().text_color(theme.error).child(
+                                            div().flex().flex_col().child(div().flex_1()).child(
+                                            svg()
+                                                .path("icons/circle-exclamation-solid-full.svg")
+                                                .w(px(20.))
+                                                .h_auto()
+                                                .mr_1()
+                                                .text_color(theme.error)).child(div().flex_1())
+                                        )
+                                        .child(div().child("Error"))
+                                    )
+                                    .child(format!("Editing may be disabled due to error: {fatal_error}."))
+                                    .child(div().text_xs().text_color(theme.subtext).child("Fix the error and save in the editor to dismiss."))
+                                    .whitespace_normal()
+                                    .top_2()
+                                    .left_2()
+                                    .right_2()
+                            );
+                        }
+
+                        d
+                    })
                     .child(self.layer_sidebar.clone()),
             )
             .child(self.text_input.clone())
