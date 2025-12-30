@@ -3,7 +3,6 @@
 //! Pass 1: import resolution
 //! Pass 2: assign variable IDs/type checking
 //! Pass 3: solving
-use std::collections::HashMap;
 use std::collections::{BinaryHeap, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -1912,7 +1911,7 @@ struct CellState {
     fallback_constraints: BinaryHeap<FallbackConstraint>,
     fallback_constraints_used: Vec<LinearExpr>,
     unsolved_vars: Option<IndexSet<Var>>,
-    constraint_span_map: HashMap<ConstraintId, Span>,
+    constraint_span_map: IndexMap<ConstraintId, Span>,
 }
 
 struct ExecPass<'a> {
@@ -2143,7 +2142,7 @@ impl<'a> ExecPass<'a> {
                         root_scope: root_scope_id,
                         unsolved_vars: Default::default(),
                         objects: Default::default(),
-                        constraint_span_map: HashMap::new(),
+                        constraint_span_map: IndexMap::new(),
                     }
                 )
                 .is_none()
