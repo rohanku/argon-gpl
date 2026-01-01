@@ -1286,12 +1286,10 @@ impl<'a> AstTransformer for VarIdTyPass<'a> {
     ) -> <Self::OutputMetadata as AstMetadata>::UnaryOpExpr {
         match input.op {
             UnaryOp::Not => {
-                if operand.ty() != Ty::Bool {
-                    self.errors.push(StaticError {
-                        span: self.span(operand.span()),
-                        kind: StaticErrorKind::UnaryOpInvalidType,
-                    });
-                }
+                self.errors.push(StaticError {
+                    span: self.span(input.span),
+                    kind: StaticErrorKind::Unimplemented,
+                });
                 Ty::Bool
             }
             UnaryOp::Neg => {
@@ -4163,6 +4161,9 @@ pub enum StaticErrorKind {
     /// Invalid LYP file.
     #[error("invalid LYP file")]
     InvalidLyp,
+    /// Unimplemented.
+    #[error("unimplemented")]
+    Unimplemented,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
