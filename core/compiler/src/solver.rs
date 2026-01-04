@@ -7,8 +7,8 @@ use nalgebra_sparse::{CooMatrix, CsrMatrix};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-const EPSILON: f64 = 1e-10;
-const ROUND_STEP: f64 = 1e-3;
+const EPSILON: f64 = 1e-8;
+const ROUND_STEP: f64 = 0.1;
 const INV_ROUND_STEP: f64 = 1. / ROUND_STEP;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
@@ -84,6 +84,7 @@ impl Solver {
         let mut constraint = SolverConstraint { id, expr };
         substitute_expr(&self.solved_vars, &mut constraint.expr);
         self.constraints.push(constraint);
+        self.solve();
         id
     }
 

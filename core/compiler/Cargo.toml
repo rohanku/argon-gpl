@@ -8,9 +8,7 @@ derive-where = { version = "1", features = ["serde"] }
 nalgebra = { version = "0.34", features = ["rayon"] }
 nalgebra-sparse = "0.11"
 klayout-lyp = "0.1.1"
-rayon = "1.10"
-libc = "0.2"
-rand = "0.8.5"
+gds21 = "0.2"
 
 anyhow = { workspace = true }
 cfgrammar = { workspace = true }
@@ -23,13 +21,15 @@ serde = { workspace = true }
 approx = { workspace = true }
 indexmap = { workspace = true }
 geometry = { workspace = true }
+uniquify = { workspace = true }
 rgb = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 regex = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-gds21 = "0.2"
+const_format = "0.2"
 
 [build-dependencies]
 lrpar = { version = "0.13", features = ["serde"] }

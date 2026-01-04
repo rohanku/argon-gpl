@@ -32,12 +32,13 @@ use crate::{
     solver::{LinearExpr, Solver},
 };
 
-pub const BUILTINS: [&str; 10] = [
+pub const BUILTINS: [&str; 11] = [
     "cons",
     "head",
     "tail",
     "crect",
     "rect",
+    "text",
     "float",
     "eq",
     "dimension",
@@ -498,6 +499,7 @@ impl Ty {
             "Float" => Some(Ty::Float),
             "Rect" => Some(Ty::Rect),
             "Int" => Some(Ty::Int),
+            "String" => Some(Ty::String),
             "()" => Some(Ty::Nil),
             "[]" => Some(Ty::SeqNil),
             _ => None,
@@ -1284,12 +1286,10 @@ impl<'a> AstTransformer for VarIdTyPass<'a> {
     ) -> <Self::OutputMetadata as AstMetadata>::UnaryOpExpr {
         match input.op {
             UnaryOp::Not => {
-                if operand.ty() != Ty::Bool {
-                    self.errors.push(StaticError {
-                        span: self.span(operand.span()),
-                        kind: StaticErrorKind::UnaryOpInvalidType,
-                    });
-                }
+                self.errors.push(StaticError {
+                    span: self.span(input.span),
+                    kind: StaticErrorKind::Unimplemented,
+                });
                 Ty::Bool
             }
             UnaryOp::Neg => {
@@ -1457,6 +1457,16 @@ impl<'a> AstTransformer for VarIdTyPass<'a> {
                     };
                     self.typecheck_kwargs(&args.kwargs, kwarg_defs);
                     (None, Ty::Rect)
+                }
+                "text" => {
+                    // text, layer, x, y
+                    self.typecheck_posargs(
+                        input.span,
+                        &args.posargs,
+                        &[Ty::String, Ty::String, Ty::Float, Ty::Float],
+                    );
+                    self.typecheck_kwargs(&args.kwargs, IndexMap::default());
+                    (None, Ty::Nil)
                 }
                 "cons" => {
                     self.assert_eq_arity(input.span, args.posargs.len(), 2);
@@ -1797,6 +1807,16 @@ pub struct Dimension<T> {
     pub span: Option<Span>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Text<T> {
+    pub id: ObjectId,
+    pub text: String,
+    pub layer: String,
+    pub x: T,
+    pub y: T,
+    pub span: Option<Span>,
+}
+
 type FrameId = u64;
 type ValueId = u64;
 pub type CellId = u64;
@@ -1853,6 +1873,7 @@ struct ExecScope {
 struct FallbackConstraint {
     priority: i32,
     constraint: LinearExpr,
+    span: Span,
 }
 
 impl PartialEq for FallbackConstraint {
@@ -1888,6 +1909,7 @@ struct CellState {
     fallback_constraints: BinaryHeap<FallbackConstraint>,
     fallback_constraints_used: Vec<LinearExpr>,
     unsolved_vars: Option<IndexSet<Var>>,
+    constraint_span_map: IndexMap<ConstraintId, Span>,
 }
 
 struct ExecPass<'a> {
@@ -2118,6 +2140,7 @@ impl<'a> ExecPass<'a> {
                         root_scope: root_scope_id,
                         unsolved_vars: Default::default(),
                         objects: Default::default(),
+                        constraint_span_map: IndexMap::new(),
                     }
                 )
                 .is_none()
@@ -2198,8 +2221,9 @@ impl<'a> ExecPass<'a> {
                 }
                 let mut constraint_added = false;
                 let state = self.cell_state_mut(cell_id);
-                while let Some(FallbackConstraint { constraint, .. }) =
-                    state.fallback_constraints.pop()
+                while let Some(FallbackConstraint {
+                    constraint, span, ..
+                }) = state.fallback_constraints.pop()
                 {
                     if constraint
                         .coeffs
@@ -2207,7 +2231,8 @@ impl<'a> ExecPass<'a> {
                         .any(|(c, v)| c.abs() > 1e-6 && !state.solver.is_solved(*v))
                     {
                         state.fallback_constraints_used.push(constraint.clone());
-                        state.solver.constrain_eq0(constraint);
+                        let constraint_id = state.solver.constrain_eq0(constraint);
+                        state.constraint_span_map.insert(constraint_id, span);
                         constraint_added = true;
                         break;
                     }
@@ -2226,18 +2251,25 @@ impl<'a> ExecPass<'a> {
                 require_progress = true;
             }
         }
+
         let state = self.cell_state_mut(cell_id);
         if progress {
             state.solve_iters += 1;
             state.solver.solve();
         }
         for constraint in state.solver.inconsistent_constraints().clone() {
+            let span = self
+                .cell_state(cell_id)
+                .constraint_span_map
+                .get(&constraint)
+                .cloned();
             self.errors.push(ExecError {
-                span: None,
+                span,
                 cell: cell_id,
                 kind: ExecErrorKind::InconsistentConstraint(constraint),
             });
         }
+
         self.partial_cells
             .pop_back()
             .expect("failed to pop cell id");
@@ -2281,6 +2313,14 @@ impl<'a> ExecPass<'a> {
                         span: rect.span.clone(),
                     })
                 }
+                Object::Text(text) => SolvedValue::Text(Text {
+                    id: text.id,
+                    text: text.text.clone(),
+                    layer: text.layer.clone(),
+                    x: state.solver.eval_expr(&text.x).unwrap(),
+                    y: state.solver.eval_expr(&text.y).unwrap(),
+                    span: text.span.clone(),
+                }),
                 Object::Dimension(dim) => SolvedValue::Dimension(Dimension {
                     id: dim.id,
                     p: state.solver.eval_expr(&dim.p).unwrap(),
@@ -2869,6 +2909,7 @@ impl<'a> ExecPass<'a> {
                                 }
                                 x => unreachable!("unsupported kwarg `{x}`"),
                             };
+                            let span = self.span(&vref.loc, kwarg.span);
                             let defer = self.value_id();
                             self.values.insert(
                                 defer,
@@ -2878,12 +2919,49 @@ impl<'a> ExecPass<'a> {
                                         rhs: *rhs,
                                         fallback: kwarg.name.name.ends_with('i'),
                                         priority,
+                                        span,
                                     }),
                                     loc: vref.loc,
                                 }),
                             );
                             self.cell_state_mut(vref.loc.cell).deferred.insert(defer);
                         }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                "text" => {
+                    let args = c
+                        .state
+                        .posargs
+                        .iter()
+                        .map(|vid| self.values[vid].get_ready())
+                        .collect::<Option<Vec<_>>>();
+                    if let Some(mut args) = args {
+                        assert_eq!(args.len(), 4);
+                        let id = object_id(&mut self.next_id);
+                        let span = self.span(&vref.loc, c.expr.span);
+                        let state = self.cell_states.get_mut(&vref.loc.cell).unwrap();
+                        let y = args.pop().unwrap().as_ref().unwrap_linear().clone();
+                        let x = args.pop().unwrap().as_ref().unwrap_linear().clone();
+                        let layer = args.pop().unwrap().as_ref().unwrap_string().clone();
+                        let text_val = args.pop().unwrap().as_ref().unwrap_string().clone();
+                        let text = Text {
+                            id,
+                            text: text_val,
+                            layer,
+                            x,
+                            y,
+                            span: Some(span.clone()),
+                        };
+                        state.object_emit.push(ObjectEmit {
+                            scope: vref.loc.scope,
+                            object: text.id,
+                            span,
+                        });
+                        state.objects.insert(text.id, text.clone().into());
+                        self.values.insert(vid, Defer::Ready(Value::Nil));
                         true
                     } else {
                         false
@@ -2974,7 +3052,15 @@ impl<'a> ExecPass<'a> {
                     ) {
                         let expr = vl.as_ref().unwrap_linear().clone()
                             - vr.as_ref().unwrap_linear().clone();
-                        state.solver.constrain_eq0(expr);
+                        let constraint = state.solver.constrain_eq0(expr);
+
+                        state.constraint_span_map.insert(
+                            constraint,
+                            Span {
+                                path: state.scopes[&vref.loc.scope].span.path.clone(),
+                                span: c.expr.span,
+                            },
+                        );
                         self.values.insert(vid, Defer::Ready(Value::Nil));
                         true
                     } else {
@@ -3059,6 +3145,7 @@ impl<'a> ExecPass<'a> {
                             constraint,
                             span: Some(span.clone()),
                         };
+                        state.constraint_span_map.insert(constraint, span.clone());
                         state.object_emit.push(ObjectEmit {
                             scope: vref.loc.scope,
                             object: dim.id,
@@ -3189,6 +3276,7 @@ impl<'a> ExecPass<'a> {
                                 }
                                 _ => continue,
                             };
+                            let span = self.span(&vref.loc, kwarg.span);
                             let defer = self.value_id();
                             self.values.insert(
                                 defer,
@@ -3198,6 +3286,7 @@ impl<'a> ExecPass<'a> {
                                         rhs: *rhs,
                                         fallback: kwarg.name.name.ends_with('i'),
                                         priority,
+                                        span,
                                     }),
                                     loc: vref.loc,
                                 }),
@@ -3629,9 +3718,11 @@ impl<'a> ExecPass<'a> {
                         state.fallback_constraints.push(FallbackConstraint {
                             priority: c.priority,
                             constraint: expr,
+                            span: c.span.clone(),
                         });
                     } else {
-                        state.solver.constrain_eq0(expr);
+                        let constraint = state.solver.constrain_eq0(expr);
+                        state.constraint_span_map.insert(constraint, c.span.clone());
                     }
                     self.values.insert(vid, DeferValue::Ready(Value::Nil));
                     true
@@ -3810,6 +3901,7 @@ pub struct SolvedInstance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SolvedValue {
     Rect(Rect<(f64, LinearExpr)>),
+    Text(Text<f64>),
     Dimension(Dimension<f64>),
     Instance(SolvedInstance),
 }
@@ -3818,6 +3910,7 @@ pub enum SolvedValue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Object {
     Rect(Rect<LinearExpr>),
+    Text(Text<LinearExpr>),
     Dimension(Dimension<LinearExpr>),
     Inst(Instance),
 }
@@ -3825,6 +3918,12 @@ pub enum Object {
 impl From<Rect<LinearExpr>> for Object {
     fn from(value: Rect<LinearExpr>) -> Self {
         Self::Rect(value)
+    }
+}
+
+impl From<Text<LinearExpr>> for Object {
+    fn from(value: Text<LinearExpr>) -> Self {
+        Self::Text(value)
     }
 }
 
@@ -3918,6 +4017,31 @@ pub fn bbox_union(b1: Option<Rect<f64>>, b2: Option<Rect<f64>>) -> Option<Rect<f
         }),
         (Some(r), None) | (None, Some(r)) => Some(r),
         (None, None) => None,
+    }
+}
+
+pub fn bbox_text_union(b: Option<Rect<f64>>, t: &Text<f64>) -> Option<Rect<f64>> {
+    match b {
+        Some(r) => Some(Rect {
+            layer: None,
+            x0: r.x0.min(t.x),
+            y0: r.y0.min(t.y),
+            x1: r.x1.max(t.x),
+            y1: r.y1.max(t.y),
+            id: r.id,
+            construction: true,
+            span: None,
+        }),
+        None => Some(Rect {
+            layer: None,
+            x0: t.x,
+            y0: t.y,
+            x1: t.x,
+            y1: t.y,
+            id: t.id,
+            construction: true,
+            span: None,
+        }),
     }
 }
 
@@ -4064,6 +4188,9 @@ pub enum StaticErrorKind {
     /// Invalid LYP file.
     #[error("invalid LYP file")]
     InvalidLyp,
+    /// Unimplemented.
+    #[error("unimplemented")]
+    Unimplemented,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4168,6 +4295,7 @@ struct PartialConstraint {
     rhs: ValueId,
     fallback: bool,
     priority: i32,
+    span: Span,
 }
 
 #[derive(Debug, Clone)]
