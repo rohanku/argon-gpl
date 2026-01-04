@@ -436,7 +436,7 @@ mod tests {
     //big matrix
     #[test]
     fn big_num_stab_test() {
-        //make a graph laplacian for grid, want to see if QR = A?
+        //make a graph laplacian for grid, want to see if QR = A
         fn generate_bad_value() -> f64 {
             use rand::Rng;
             use rand::seq::SliceRandom;
@@ -450,7 +450,7 @@ mod tests {
             magnitude * sign * noise
         }
         let size = 25;
-        //let mut a_coo: CooMatrix<f64> = CooMatrix::new(size * size, size * size);
+
         use nalgebra::DMatrix;
         let mut a_dense = DMatrix::zeros(size * size, size * size);
         let mut triplets: Vec<(usize, usize, f64)> = Vec::new();

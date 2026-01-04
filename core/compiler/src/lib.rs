@@ -436,14 +436,12 @@ mod tests {
 
         assert!(cells.is_valid());
 
-        let GDunit = GdsUnits::new(0.001, 1e-9);
-
         let work_dir =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/argon_sky130_inverter");
         cells
             .to_gds(
                 GdsMap::from_lyp(SKY130_LYP).expect("failed to create GDS map"),
-                GDunit,
+                GdsUnits::new(1e-3, 1e-9),
                 work_dir.join("layout.gds"),
             )
             .expect("Failed to write to GDS");
@@ -682,13 +680,11 @@ mod tests {
         );
         println!("{cells:#?}");
 
-        let GDunit = GdsUnits::new(0.001, 1e-9);
-
         let work_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build/argon_text");
         cells
             .to_gds(
                 GdsMap::from_lyp(SKY130_LYP).expect("failed to create GDS map"),
-                GDunit,
+                GdsUnits::new(1e-3, 1e-9),
                 work_dir.join("layout.gds"),
             )
             .expect("Failed to write to GDS");
