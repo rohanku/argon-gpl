@@ -2875,17 +2875,18 @@ impl<'a> ExecPass<'a> {
     }
 
     fn eval_partial(&mut self, vid: ValueId) -> Result<bool, ()> {
-        let v = self.values.swap_remove(&vid);
+        let v = self.values.get(&vid);
         if v.is_none() {
+            self.values.swap_remove(&vid);
             return Ok(false);
         }
         let mut v = v.unwrap();
-        let vref = v.as_mut();
+        let vref = v.as_ref();
         if vref.is_ready() {
-            self.values.insert(vid, v);
             return Ok(false);
         }
-        let vref = vref.unwrap_deferred();
+        let mut vref = vref.unwrap_deferred().clone();
+        let cell_id = vref.loc.cell;
         let state = self.cell_states.get_mut(&vref.loc.cell).unwrap();
         let progress = match &mut vref.state {
             PartialEvalState::Call(c) => match c.expr.func.path.last().unwrap().name.as_str() {
@@ -3597,6 +3598,7 @@ impl<'a> ExecPass<'a> {
                             );
                             if_.state = IfExprState::Else(else_);
                         }
+                        self.values.insert(vid, Defer::Deferred(vref));
                         true
                     } else {
                         false
@@ -3631,6 +3633,7 @@ impl<'a> ExecPass<'a> {
                             .unwrap();
                         let value = self.visit_expr(vref.loc, &arm.expr);
                         match_.state = MatchExprState::Value(value);
+                        self.values.insert(vid, Defer::Deferred(vref));
                         true
                     } else {
                         false
@@ -3956,8 +3959,6 @@ impl<'a> ExecPass<'a> {
             }
         };
 
-        let cell_id = vref.loc.cell;
-        self.values.entry(vid).or_insert(v);
         if self.values[&vid].is_ready() {
             self.cell_state_mut(cell_id).deferred.swap_remove(&vid);
         }
